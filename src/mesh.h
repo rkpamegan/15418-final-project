@@ -211,6 +211,7 @@ public:
 		//data:
 		uint32_t id; //unique-within-the-mesh ID for this vertex
 		Vec3 position; //location of the vertex
+		uint32_t color = 0;
 
 		//helpers:
 		bool on_boundary() const; //is vertex on a boundary loop?
@@ -233,6 +234,7 @@ public:
 		//data:
 		uint32_t id; //unique-in-this-mesh id
 		bool sharp = false; //should this edge be considered sharp when computing shading normals?
+		uint32_t color = 0;
 
 		//helpers:
 		bool on_boundary() const; // Is edge on a boundary loop?

@@ -12,7 +12,19 @@ struct Isotropic_Remesh_Params {
 class CudaRemesher {
     private:
         Mesh mesh;
+        Mesh::VertexRef* cudaDeviceVertices;
+        Mesh::EdgeRef* cudaDeviceEdges;
+        Mesh::HalfedgeRef* cudaDeviceHalfedges;
+        Mesh::FaceRef* cudaDeviceFaces;
+
+        void color_mesh();
+        void color_vertices();
+        void color_edges();
+        __global__ void kernelSplitEdge();
     public:
+        CudaRemesher();
+        ~CudaRemesher();
+
         void setup(Mesh mesh);
         
         void isotropic_remesh(Isotropic_Remesh_Params const &params);

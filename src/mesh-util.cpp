@@ -11,6 +11,24 @@
 #include <iostream>
 #include <assert.h>
 
+void Mesh::interpolate_data(std::vector< VertexCRef > const &from, VertexRef to) {
+	// assert(from.size() >= 1);
+
+	// std::map< uint32_t, float > weights;
+	// for (VertexCRef const v : from) {
+	// 	for (Vertex::Bone_Weight const &bw : v->bone_weights) {
+	// 		weights.emplace(bw.bone, 0.0f).first->second += bw.weight;
+	// 	}
+	// }
+
+	// to->bone_weights.clear();
+	// to->bone_weights.reserve(weights.size());
+	// float div = 1.0f / float(from.size());
+	// for (auto const &bw : weights) {
+	// 	to->bone_weights.emplace_back(Vertex::Bone_Weight{ bw.first, div * bw.second });
+	// }
+}
+
 void Mesh::interpolate_data(std::vector< HalfedgeCRef > const &from, HalfedgeRef to) {
 	assert(from.size() >= 1);
 
