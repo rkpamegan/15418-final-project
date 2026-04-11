@@ -1,4 +1,5 @@
 #include "mesh.h"
+#include <stdint.h>
 
 //improve mesh quality via isotropic remeshing
 struct Isotropic_Remesh_Params {
@@ -11,16 +12,18 @@ struct Isotropic_Remesh_Params {
 
 class CudaRemesher {
     private:
-        Mesh mesh;
-        Mesh::VertexRef* cudaDeviceVertices;
-        Mesh::EdgeRef* cudaDeviceEdges;
-        Mesh::HalfedgeRef* cudaDeviceHalfedges;
-        Mesh::FaceRef* cudaDeviceFaces;
+        uint32_t numVertices;
+        uint32_t numEdges;
+        uint32_t numHalfedges;
+        uint32_t numFaces;
+
+        Mesh::Vertex* cudaDeviceVertices;
+        Mesh::Edge* cudaDeviceEdges;
+        Mesh::Halfedge* cudaDeviceHalfedges;
+        Mesh::Face* cudaDeviceFaces;
 
         void color_mesh();
-        void color_vertices();
-        void color_edges();
-        __global__ void kernelSplitEdge();
+        
     public:
         CudaRemesher();
         ~CudaRemesher();

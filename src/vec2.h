@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <ostream>
+#include <stdint.h>
+#include <assert.h>
 
 struct Vec2 {
 

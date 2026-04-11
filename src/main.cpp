@@ -1,0 +1,25 @@
+#include "mesh.h"
+#include "cudaRemesh.h"
+
+#include <stdio.h>
+
+int main() {
+    CudaRemesher* remesher = new CudaRemesher();
+
+    // Mesh mesh = Mesh::from_indexed_faces({	
+	// 	Vec3{-1.0f, 1.0f, 1.0f}, 	Vec3{-1.0f, 1.0f, -1.0f},
+	// 	Vec3{-1.0f, -1.0f, -1.0f}, 	Vec3{-1.0f, -1.0f, 1.0f},
+	// 	Vec3{1.0f, -1.0f, -1.0f}, 	Vec3{1.0f, -1.0f, 1.0f},
+	// 	Vec3{1.0f, 1.0f, -1.0f}, 	Vec3{1.0f, 1.0f, 1.0f}
+	// },{
+	// 	{3, 0, 1, 2}, 
+	// 	{5, 3, 2, 4}, 
+	// 	{7, 5, 4, 6}, 
+	// 	{0, 7, 6, 1}, 
+	// 	{0, 3, 5, 7}, 
+	// 	{6, 4, 2, 1}
+	// });
+    // remesher->setup(mesh);
+    return 0;
+
+}
