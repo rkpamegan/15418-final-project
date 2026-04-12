@@ -2,11 +2,17 @@
  * TODO: Find workaround for emplace_x function calls, as they can cause data races
  * TODO: Graph coloring algorithm for vertices/edges
  */
+
+#include <stdint.h>
+
 #include <cuda.h>
-// #include <cuda_runtime.h>
+#include <cuda_runtime.h>
+#include "thrust/scan.h"
+#include "thrust/reduce.h"
+#include "thrust/functional.h"
+
 #include "mesh.h"
 #include "cudaRemesh.h"
-#include <stdint.h>
 
 CudaRemesher::CudaRemesher() {
 	cudaDeviceVertices = NULL;
@@ -63,219 +69,39 @@ void CudaRemesher::setup(Mesh mesh) {
  *  2.
  *
  */ 
-__global__ void color_vertices() {
+__global__ void kernel_color_vertices(Mesh::Vertex* vertices) { }
+__global__ void kernel_color_edges(Mesh::Edge* edges) { }
 
-}
+__global__ void kernel_smooth_vertex() { }
 
-__global__ void color_edges() {
+/**
+ * Populates a mask of size numEdges with the edges
+ * which should be flipped
+ */
+__global__ void kernel_get_flip_edges(Mesh::Edge* edges, int* mask) { }
+__global__ void kernel_flip_edge(Mesh::Edge* edges, int color) { }
 
-}
+/**
+ * Populates a mask of size numEdges with the edges
+ * which should be collapsed
+ */
+__global__ void kernel_get_collapse_edges(Mesh::Edge* edges, int* mask) { }
+__global__ void kernel_collapse_edge(Mesh::Edge* edges, int color) { }
 
-void CudaRemesher::color_mesh() {
-	// color_vertices<<<>>>color_vertices();
-	// color_edges();
-}
-
-__global__ void kernel_smooth_vertex() {
-	
-}
-__global__ void kernel_flip_edge() {
-
-}
-
-__global__ void kernel_collapse_edge() {
-
-}
-
-__global__ void kernel_split_edge() {
-	int index = blockIdx.x * blockDim.x + threadIdx.x;
-
-	return;
-	/*
-	// if index > numEdges, return
-	if (index > 0) return;
-
-	////////////////////////// bisect edge //////////////////////////
-	HalfedgeRef h = e->halfedge;
-	HalfedgeRef t = h->twin;
-	VertexRef v1 = h->vertex;
-	VertexRef v2 = t->vertex;
-
-	// Phase 2: Allocate new elements, set data
-	VertexRef v1 = emplace_vertex();
-	v1->position = (v1->position + v2->position) / 2.0f;
-	interpolate_data({v1, v2}, v1); //set bone_weights
-
-	EdgeRef e2 = emplace_edge();
-	e2->sharp = e->sharp; //copy sharpness flag
-
-	HalfedgeRef h2 = emplace_halfedge();
-	interpolate_data({h, h->next}, h2); //set corner_uv, corner_normal
-
-	HalfedgeRef t2 = emplace_halfedge();
-	interpolate_data({t, t->next}, t2); //set corner_uv, corner_normal
-
-	// The following elements aren't necessary for the bisect_edge, but they are here to demonstrate phase 4
-    FaceRef f_not_used = emplace_face();
-    HalfedgeRef h_not_used = emplace_halfedge();
-
-	// Phase 3: Reassign connectivity (careful about ordering so you don't overwrite values you may need later!)
-
-	v1->halfedge = h2;
-
-	e2->halfedge = h2;
-
-	assert(e->halfedge == h); //unchanged
-
-	//n.b. h remains on the same face so even if h->face->halfedge == h, no fixup needed (t, similarly)
-
-	h2->twin = t;
-	h2->next = h->next;
-	h2->vertex = v1;
-	h2->edge = e2;
-	h2->face = h->face;
-
-	t2->twin = h;
-	t2->next = t->next;
-	t2->vertex = v1;
-	t2->edge = e;
-	t2->face = t->face;
-	
-	h->twin = t2;
-	h->next = h2;
-	assert(h->vertex == v1);
-	assert(h->edge == e);
-
-	t->twin = h2;
-	t->next = t2;
-	assert(t->vertex == v2);
-	t->edge = e2;
-
-	////////////////////////// split edge //////////////////////////
-	HalfedgeRef h = e->halfedge->next;
-	HalfedgeRef tp = h->twin;
-	HalfedgeRef t = tp->next;
-
-	FaceRef f1 = h->face;
-	FaceRef f2 = t->face;
-
-	std::vector<HalfedgeCRef> f1_halfedges;
-	HalfedgeRef temp_h1 = f1->halfedge;
-	do {
-		f1_halfedges.emplace_back(temp_h1);
-		temp_h1 = temp_h1->next;
-	} while (temp_h1 != f1->halfedge);
-
-	std::vector<HalfedgeCRef> f2_halfedges;
-	HalfedgeRef temp_h2 = f2->halfedge;
-	do {
-		f2_halfedges.emplace_back(temp_h2);
-		temp_h2 = temp_h2->next;
-	} while (temp_h2 != f2->halfedge);
-	// To keep simple, we want to always assume f1 is not a boundary face,
-	// and f2 may or may not be a boundary face. The edge must have at least
-	// one non-boundary face.
-	if (f1->boundary)
-	{
-		std::swap(h, t);
-		std::swap(f1, f2);
-	}
-	
-	HalfedgeRef hn = h->next;
-	HalfedgeRef tn = t->next;
-
-	HalfedgeRef hp = h->next;
-	while (hp->next != h) hp = hp->next;
-
-	tp = t->next; // reset so we are sure we have the correct tp
-	while (tp->next != t) tp = tp->next;
-
-	VertexRef v2 = h->next->next->vertex;
-
-	// Phase 2: create
-	EdgeRef e2 = emplace_edge(false);
-	HalfedgeRef h2 = emplace_halfedge();
-	HalfedgeRef t2 = emplace_halfedge();
-	FaceRef f3 = emplace_face(false);
-	interpolate_data(f1_halfedges, h2);
-	interpolate_data(f1_halfedges, t2);
-	// Phase 3: connect
-	e2->halfedge = h2;
-
-	f3->halfedge = h2;
-
-	h2->twin = t2;
-	h2->next = h;
-	h2->vertex = v2;
-	h2->edge = e2;
-	h2->face = f3;
-
-	t2->twin = h2;
-	t2->next = hn->next;
-	t2->vertex = v1;
-	t2->edge = e2;
-	t2->face = f1;
-
-	hn->next = h2;
-	hn->face = f3;
-
-	hp->next = t2;
-
-	h->face = f3;
-
-	f1->halfedge = t2;
-	
-	if (!f2->boundary) // do same thing on f2 side if its not a boundary
-	{
-		// more collect
-		VertexRef v3 = t->next->next->vertex;
-
-		// more create
-		EdgeRef e3 = emplace_edge(false);
-		HalfedgeRef h3 = emplace_halfedge();
-		HalfedgeRef t3 = emplace_halfedge();
-		FaceRef f4 = emplace_face(false);
-		interpolate_data(f2_halfedges, h3);
-		interpolate_data(f2_halfedges, t3);
-		// more connect
-		e3->halfedge = h3;
-
-		f4->halfedge = t;
-
-		h3->twin = t3;
-		h3->next = t;
-		h3->vertex = v3;
-		h3->edge = e3;
-		h3->face = f4;
-
-		t3->twin = h3;
-		t3->next = tn->next;
-		t3->vertex = v1;
-		t3->edge = e3;
-		t3->face = f2;
-
-		tn->face = f4;
-		tn->next = h3;
-
-		t->face = f4;
-
-		tp->next = t3;
-		
-		f2->halfedge = t3;
-		 
-	}
-	// (void)e; //this line avoids 'unused parameter' warnings. You can delete it as you fill in the function.
-    // return v1;
-	*/
-}
+/**
+ * Populates a mask of size numEdges with the edges
+ * which should be split
+ */
+__global__ void kernel_get_split_edges(Mesh::Edge* edges, int* mask) { }
+__global__ void kernel_split_edge(Mesh::Edge* edges, int color) { }
 
 //isotropic_remesh: improves mesh quality through local operations.
 // Do note that this requires a working implementation of EdgeSplit, EdgeFlip, and EdgeCollapse
 void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
-	dim3 blockDim(256, 0);
-	dim3 gridDim(1, 0);
-
-	kernel_split_edge<<<blockDim, gridDim>>>();
+	// dim3 blockDim(256, 0);
+	// dim3 gridDim(1, 0);
+	
+	// kernel_get_split_edges<<<blockDim, gridDim>>>();
 
 	// Compute the mean edge length. This will be the "target length".
 
@@ -298,6 +124,53 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 	 *	5. Repeat steps 1-4 `num_iters` times.
 	 */
 
+	for (int t = 0; t < params.num_iters; t++) {
+		std::printf("iteration %d of remeshing\n", t);
+		// kernel_color_edges<<<>>>(edge_color_mask);
+
+		// color_mask holds color of corresponding edge
+		// get max color in color_mask
+		int max_color = *thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
+		// kernel_get_flip_edges<<<>>>(cudaDeviceEdges, edge_op_mask);
+		for (int c = 0; c <= max_color; c++) {
+			std::printf("Flipping edges of color %d\n", c);
+			// flips all edges with color c if flipping them increases regular-ness
+			// kernel_flip_edges<<<>>>(cudaDeviceEdges, c);
+		}
+
+		// vertex incidence may change after flipping, so we need to recolor
+		// kernel_color_edges<<<>>>(edge_color_mask);
+		// kernel_get_split_edges<<<>>>(cudaDeviceEdges, edge_op_mask);
+		max_color = *thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
+
+		// TODO: allocate space for all elements that will be produced during splits
+
+		for (int c = 0; c <= max_color; c++) {
+			std::printf("Splitting edges of color %d\n", c);
+			// flips all edges with color c if they are sufficiently larger than average
+			// kernel_split_edges<<<>>>(cudaDeviceEdges, c);
+		}
+
+		// TODO: recalculate element counts
+
+		// similar to post-flip recoloring
+		// kernel_color_edges<<<>>>(edge_color_mask);
+		// kernel_get_collapse_edges<<<>>>(cudaDeviceEdges, edge_op_mask);
+		max_color = *thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
+		
+		for (int c = 0; c <= max_color; c++) {
+			std::printf("Collapsing edges of color %d\n", c);
+			// collapses all edges with color c if they are sufficiently smaller than average 
+			// kernel_collapse_edges<<<>>>(cudaDeviceEdges, c);
+		}
+		
+		// kernel_color_vertices<<<>>>(cudaDeviceVertices, vertex_color_mask);
+		max_color = *thrust::max_element(thrust::device, vertex_color_mask, vertex_color_mask + numVertices);
+		for (int c = 0; c <= max_color; c++) {
+			std::printf("Smoothing vertices of color %d\n", c);
+			// kernel_smooth_vertex<<<>>>(cudaDeviceVertices, c);
+		}
+	}
 	//NOTE: many of the steps in this function will be modifying the element
 	//      lists they are looping over. Take care to avoid use-after-free
 	//      or infinite-loop problems.

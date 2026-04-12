@@ -22,8 +22,12 @@ class CudaRemesher {
         Mesh::Halfedge* cudaDeviceHalfedges;
         Mesh::Face* cudaDeviceFaces;
 
+        int* edge_color_mask;
+        int* edge_op_mask;
+
+        int* vertex_color_mask;
+
         void color_mesh();
-        
     public:
         CudaRemesher();
         ~CudaRemesher();
