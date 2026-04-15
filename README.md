@@ -55,8 +55,9 @@ On the other hand, there is the parallel implementation. As mentioned earlier, w
 ### Goals
 
 It does not seem likely that we will be able to achieve our planned goal. Fixing the representation of the mesh to work with CUDA is a great bottleneck, and it has resulted in us not being able to test or progress. Given this, A "nice to have" would be parallel vertex smoothing, since it seems to be the simplest out of all the subroutines to implement. 
-\newpage
+
 ### Issues
+
 - The first idea we had to properly perform edge splitting/collapsing was to color edges and only perform operations on a certain color of edge at a time. This may not work 100\% of the time for edge collapses. We currently do not have a solution for this.
 - Splitting and collapsing edges requires allocating more space and removing elements from arrays respectively. This may limit the performance of the algorithm. We also do not know how to solve this.
 - The current implementation of the remesher uses arrays of element structs, which themselves hold pointers to other structs. These get invalidated when data is moved to CUDA devices. We think that reformatting the arrays to be just the data inside the structs and using indices to denote an element (similar to pixels in the CUDA renderer from Assignment 2) is a better idea, so the plan is to rewrite our program in a similar fashion.
