@@ -86,7 +86,9 @@ void CudaRemesher::setup(Mesh _mesh) {
  *
  */ 
 __global__ void kernel_color_vertices(Mesh::Vertex* vertices, uint32_t num_vertices,int* color_mask) { }
-__global__ void kernel_color_edges(Mesh::Edge* edges, uint32_t num_edges, int* color_mask) { }
+__global__ void kernel_color_edges(Mesh::Edge* edges, uint32_t num_edges, int* color_mask) {
+
+}
 
 __global__ void kernel_smooth_vertex(Mesh::Vertex* vertices, uint32_t num_vertices, int color) { }
 
@@ -98,18 +100,20 @@ __global__ void kernel_get_flip_edges(Mesh::Edge* edges, uint32_t num_edges, int
 __global__ void kernel_flip_edge(Mesh::Edge* edges, uint32_t num_edges, int color) { }
 
 
-__device__ void kernel_get_edge_lengths(Mesh::Edge* edges, float* lengths, uint32_t num_edges)
+__device__ void kernel_get_edge_lengths(Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Vertex* vertices, float* lengths, uint32_t num_edges)
 {
 	int index = blockDim.x * blockIdx.x + threadIdx.x;
 	if (index > num_edges) return;
 
-	Mesh::Edge* e = &edges[index];
-	Mesh::Vertex* const v1 = e->halfedge->vertex;
-	Mesh::Vertex* const v2 = e->halfedge->twin->vertex;
+	Mesh::Edge e = edges[index];
+	Mesh::Halfedge h = halfedges[e.halfedge_idx];
+	Mesh::Halfedge h_twin = halfedges[h.twin_idx];
+	Mesh::Vertex v1 = vertices[h.vertex_idx];
+	Mesh::Vertex v2 = vertices[h_twin.vertex_idx];
 
-	float dx = (v1->position.x - v2->position.x);
-	float dy = (v1->position.y - v2->position.y);
-	float dz = (v1->position.z - v2->position.z);
+	float dx = (v1.position.x - v2.position.x);
+	float dy = (v1.position.y - v2.position.y);
+	float dz = (v1.position.z - v2.position.z);
 
 	lengths[index] = std::sqrt(dx * dx + dy * dy + dz * dz);
 }
@@ -197,7 +201,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			kernel_flip_edge<<<blockDim, gridDim>>>(cudaDeviceEdges, numEdges, c);
 		}
 			
-		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, edge_lengths, numEdges);
+		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, edge_lengths, numEdges);
 		float avg_len = thrust::reduce(thrust::device, edge_lengths, edge_lengths + numEdges, 0.0f, thrust::plus<float>());
 		// vertex incidence may change after flipping, so we need to recolor
 		kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, numEdges, edge_color_mask);
@@ -217,10 +221,10 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		// similar to post-flip recoloring
 		kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, numEdges, edge_color_mask);
 
-		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, edge_lengths, numEdges);
-		float avg_len = thrust::reduce(thrust::device, edge_lengths, edge_lengths + numEdges, 0.0f, thrust::plus<float>());
+		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, edge_lengths, numEdges);
+		float avg_len2 = thrust::reduce(thrust::device, edge_lengths, edge_lengths + numEdges, 0.0f, thrust::plus<float>());
 
-		kernel_get_collapse_edges<<<gridDim, blockDim>>>(edge_lengths, numEdges, avg_len, params.collapse_factor, edge_op_mask);
+		kernel_get_collapse_edges<<<gridDim, blockDim>>>(edge_lengths, numEdges, avg_len2, params.collapse_factor, edge_op_mask);
 		max_color = *thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
 		
 		for (int c = 0; c <= max_color; c++) {

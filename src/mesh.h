@@ -1,7 +1,10 @@
 #pragma once 
 
 #include <vector>
+#include <stdint.h>
 #include "mathlib.h"
+
+#define INVALID_IDX UINT32_MAX
 
 class Mesh {
 public:
@@ -13,7 +16,7 @@ public:
     class Vertex {
         public:
             
-            Halfedge* halfedge; // one halfedge exiting from this vertex
+            uint32_t halfedge_idx; // index of one halfedge exiting from this vertex
             Vec3 position;
             uint32_t id;
             uint32_t color;
@@ -24,14 +27,14 @@ public:
             // Vec3 neighborhood_center() const;
             std::string to_string() const;
         private:
-            Vertex() = default;
-            Vertex(uint32_t _id) : id(_id) {};
+            Vertex() : halfedge_idx(INVALID_IDX) {};
+            Vertex(uint32_t _id) : id(_id), halfedge_idx(INVALID_IDX) {};
         friend class Mesh;
     };
 
     class Edge {
         public:
-            Halfedge* halfedge; // one of the halfedges composing this edge
+            uint32_t halfedge_idx; // index of one of the halfedges composing this edge
             uint32_t id;
             uint32_t color;
             bool sharp;
@@ -40,30 +43,30 @@ public:
             // bool on_boundary() const;
             std::string to_string() const;
         private:
-            Edge() = default;
-            Edge(uint32_t _id, bool _sharp) : id(_id), sharp(_sharp) {};
+            Edge() : halfedge_idx(INVALID_IDX) {};
+            Edge(uint32_t _id, bool _sharp) : id(_id), sharp(_sharp), halfedge_idx(INVALID_IDX) {};
         friend class Mesh;
     };
 
     class Halfedge {
         public:
-            Halfedge* twin; // the halfedge on the other side of the edge
-            Halfedge* next; // the next halfedge going counter-clockwise around the face
-            Vertex* vertex; // the vertex this halfedge leaves from 
-            Edge* edge; // the edge this halfedge is along
-            Face* face; // the face this halfedge is along
+            uint32_t twin_idx; // index of the halfedge on the other side of the edge
+            uint32_t next_idx; // index of the next halfedge going counter-clockwise around the face
+            uint32_t vertex_idx; // index of the vertex this halfedge leaves from 
+            uint32_t edge_idx; // index of the edge this halfedge is along
+            uint32_t face_idx; // index of the face this halfedge is along
 
             uint32_t id;
-            Halfedge() : twin(NULL), next(NULL), vertex(NULL), edge(NULL), face(NULL) {};
+            Halfedge() : twin_idx(INVALID_IDX), next_idx(INVALID_IDX), vertex_idx(INVALID_IDX), edge_idx(INVALID_IDX), face_idx(INVALID_IDX) {};
             std::string to_string() const;
         private:
-            Halfedge(uint32_t _id) : id(_id) {};
+            Halfedge(uint32_t _id) : id(_id), twin_idx(INVALID_IDX), next_idx(INVALID_IDX), vertex_idx(INVALID_IDX), edge_idx(INVALID_IDX), face_idx(INVALID_IDX) {};
         friend class Mesh;
     };
 
     class Face {
         public:
-            Halfedge* halfedge; // one halfedge along the face
+            uint32_t halfedge_idx; // index of one halfedge along the face
 
             uint32_t id;
             bool boundary = false; // is boundary loop
@@ -72,8 +75,8 @@ public:
             // float area() const; // area of face;
             std::string to_string() const;
         private:
-            Face() = default;
-            Face(uint32_t _id, bool _boundary) : id(_id), boundary(_boundary) {};
+            Face() : halfedge_idx(INVALID_IDX) {};
+            Face(uint32_t _id, bool _boundary) : id(_id), boundary(_boundary), halfedge_idx(INVALID_IDX) {};
         friend class Mesh;
     };
 
@@ -97,8 +100,8 @@ public:
         uint32_t next_e_id = 0;
         uint32_t next_f_id = 0;
 
-        Vertex emplace_vertex();
-        Edge emplace_edge(bool sharp);
-        Face emplace_face(bool boundary);
-        Halfedge emplace_halfedge();
+        uint32_t emplace_vertex();
+        uint32_t emplace_edge(bool sharp);
+        uint32_t emplace_face(bool boundary);
+        uint32_t emplace_halfedge();
 };

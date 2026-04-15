@@ -39,15 +39,12 @@ Mesh Mesh::from_indexed_faces(std::vector< Vec3 > const &vertices_,
 
 	Mesh mesh;
 
-	std::vector< Vertex > vertices; //for quick lookup of vertices by index
-	vertices.reserve(vertices_.size());
 	for (auto const &v : vertices_) {
-		vertices.emplace_back(mesh.emplace_vertex());
-		vertices.back().position = v;
+		uint32_t vi = mesh.emplace_vertex();
+		mesh.vertices[vi].position = v;
 	}
 
-
-	std::unordered_map< std::pair< uint32_t, uint32_t >, Halfedge > halfedges; //for quick lookup of halfedges by from/to vertex index
+	std::unordered_map< std::pair< uint32_t, uint32_t >, uint32_t > halfedge_map; //for quick lookup of halfedge index by from/to vertex index
 
 	uint32_t num_faces = static_cast<uint32_t>(faces_.size());
 	//helper to add a face (and, later, boundary):
@@ -61,51 +58,52 @@ Mesh Mesh::from_indexed_faces(std::vector< Vec3 > const &vertices_,
 			if (loop[j] == loop[(j + 1) % loop.size()]) { return; }
 		}
 
-		Face f = mesh.emplace_face(boundary);
-		Face* face = &f;
-		Halfedge* prev = nullptr; //keep track of previous edge around face to set next pointer
+		uint32_t face_idx = mesh.emplace_face(boundary);
+		uint32_t first_he_idx = INVALID_IDX;
+		uint32_t prev_he_idx = INVALID_IDX;
 		for (uint32_t i = 0; i < loop.size(); ++i) {
 			uint32_t a = loop[i];
 			uint32_t b = loop[(i + 1) % loop.size()];
 			assert(a != b);
 
-			
-			Halfedge hf = mesh.emplace_halfedge();
-			Halfedge* halfedge = &hf;
-			if (i == 0) face->halfedge = halfedge; //store first edge as face's halfedge pointer
-			halfedge->vertex = &vertices[a];
-
-			//if first to mention vertex, set vertex's halfedge pointer:
-			if ((&vertices[a])->halfedge == nullptr) {
-				assert(!boundary); //boundary faces should never be mentioning novel vertices, since they are created second
-				(&vertices[a])->halfedge = halfedge;
+			uint32_t he_idx = mesh.emplace_halfedge();
+			if (i == 0) {
+				mesh.faces[face_idx].halfedge_idx = he_idx;
+				first_he_idx = he_idx;
 			}
-			halfedge->face = face;
+			mesh.halfedges[he_idx].vertex_idx = a;
 
-			auto inserted = halfedges.emplace(std::make_pair(a,b), *halfedge);
+			//if first to mention vertex, set vertex's halfedge index:
+			if (mesh.vertices[a].halfedge_idx == INVALID_IDX) {
+				assert(!boundary); //boundary faces should never be mentioning novel vertices, since they are created second
+				mesh.vertices[a].halfedge_idx = he_idx;
+			}
+			mesh.halfedges[he_idx].face_idx = face_idx;
+
+			auto inserted = halfedge_map.emplace(std::make_pair(a,b), he_idx);
 			assert(inserted.second); //if edge mentioned more than once in the same direction, not an oriented, manifold mesh
 
-			auto twin = halfedges.find(std::make_pair(b,a));
-			if (twin == halfedges.end()) {
+			auto twin = halfedge_map.find(std::make_pair(b,a));
+			if (twin == halfedge_map.end()) {
 				assert(!boundary); //boundary faces exist only to complete edges so should *always* match
 				//not twinned yet -- create an edge just for this halfedge:
-				Edge e = mesh.emplace_edge(false);
-				Edge* edge = &e;
-				halfedge->edge = edge;
-				edge->halfedge = halfedge;
+				uint32_t edge_idx = mesh.emplace_edge(false);
+				mesh.halfedges[he_idx].edge_idx = edge_idx;
+				mesh.edges[edge_idx].halfedge_idx = he_idx;
 			} else {
-				//found a twin -- connect twin pointers and reference its edge:
-				assert((&(twin->second))->twin == nullptr);
-				halfedge->twin = &twin->second;
-				halfedge->edge = (&(twin->second))->edge;
-				(&(twin->second))->twin = halfedge;
+				//found a twin -- connect twin indices and reference its edge:
+				uint32_t twin_he_idx = twin->second;
+				assert(mesh.halfedges[twin_he_idx].twin_idx == INVALID_IDX);
+				mesh.halfedges[he_idx].twin_idx = twin_he_idx;
+				mesh.halfedges[he_idx].edge_idx = mesh.halfedges[twin_he_idx].edge_idx;
+				mesh.halfedges[twin_he_idx].twin_idx = he_idx;
 			}
 
-			if (i != 0) prev->next = halfedge; //set previous halfedge's next pointer
-			prev = halfedge;
+			if (prev_he_idx != INVALID_IDX) mesh.halfedges[prev_he_idx].next_idx = he_idx;
+			prev_he_idx = he_idx;
 		}
 
-		prev->next = face->halfedge; //set next pointer for last halfedge to first edge
+		mesh.halfedges[prev_he_idx].next_idx = first_he_idx;
 	};
 	
 	//add all faces:
@@ -140,9 +138,9 @@ Mesh Mesh::from_indexed_faces(std::vector< Vec3 > const &vertices_,
 
 
 	//first, look for all un-twinned halfedges to figure out the shape of the boundary:
-	for (auto const &[ from_to, halfedge ] : halfedges) {
+	for (auto const &[ from_to, he_idx ] : halfedge_map) {
 		std::printf("(%d -> %d)\n", from_to.first, from_to.second);
-		if (halfedge.twin == nullptr) {
+		if (mesh.halfedges[he_idx].twin_idx == INVALID_IDX) {
 			auto ret = next_on_boundary.emplace(from_to.second, from_to.first); //twin needed on the boundary
 			assert(ret.second); //every boundary vertex should have a unique successor because the boundary is "half-disc-like"
 		}
@@ -187,49 +185,34 @@ Mesh Mesh::from_indexed_faces(std::vector< Vec3 > const &vertices_,
 	return mesh;
 }
 
-Mesh::Vertex Mesh::emplace_vertex() {
-	Vertex vertex;
-	vertex = vertices.emplace_back(Vertex(next_v_id++));
-	//make sure vertex doesn't reference anything:
-	vertex.halfedge = NULL;
-	std::printf("%p %p\n", &vertices, &vertex);
-	return vertex;
+uint32_t Mesh::emplace_vertex() {
+	uint32_t idx = vertices.size();
+	vertices.emplace_back(Vertex(next_v_id++));
+	return idx;
 }
 
-Mesh::Edge Mesh::emplace_edge(bool sharp) {
-	Edge edge;
-	//allocate a new edge:
-    edge = edges.emplace_back(Edge(next_e_id++, sharp));
-	//make sure edge doesn't reference anything:
-	edge.halfedge = nullptr;
-	return edge;
+uint32_t Mesh::emplace_edge(bool sharp) {
+	uint32_t idx = edges.size();
+	edges.emplace_back(Edge(next_e_id++, sharp));
+	return idx;
 }
 
-Mesh::Face Mesh::emplace_face(bool boundary) {
-	Face face;
-    face = faces.emplace_back(Face(next_f_id++, boundary));
-	face.halfedge = nullptr;
-	return face;
+uint32_t Mesh::emplace_face(bool boundary) {
+	uint32_t idx = faces.size();
+	faces.emplace_back(Face(next_f_id++, boundary));
+	return idx;
 }
 
-Mesh::Halfedge Mesh::emplace_halfedge() {
-	Halfedge halfedge;
-    //allocate a new halfedge:
-    halfedge = halfedges.emplace_back(Halfedge(next_h_id++));
-	//set pointers to default values:
-	halfedge.twin = nullptr;
-	halfedge.next = nullptr;
-	halfedge.vertex = nullptr;
-	halfedge.edge = nullptr;
-	halfedge.face = nullptr;
-	return halfedge;
+uint32_t Mesh::emplace_halfedge() {
+	uint32_t idx = halfedges.size();
+	halfedges.emplace_back(Halfedge(next_h_id++));
+	return idx;
 }
 
 std::string Mesh::Vertex::to_string() const {
 	std::string s = "v" + std::to_string(id);
-	if (halfedge != NULL) {
-		s += " h" + std::to_string(halfedge->id);
-		std::printf("%s\n", halfedge->to_string());
+	if (halfedge_idx != INVALID_IDX) {
+		s += " h" + std::to_string(halfedge_idx);
 	}
 	return s;
 }
@@ -241,7 +224,7 @@ std::ostream& operator << (std::ostream& outs, const Mesh::Vertex& v) {
 
 std::string Mesh::Edge::to_string() const {
 	std::string s = "e" + std::to_string(id);
-	if (halfedge != NULL) s += " h" + std::to_string(halfedge->id); 
+	if (halfedge_idx != INVALID_IDX) s += " h" + std::to_string(halfedge_idx); 
 	return s;
 }
 std::ostream& operator << (std::ostream& outs, const Mesh::Edge& e) {
@@ -249,11 +232,11 @@ std::ostream& operator << (std::ostream& outs, const Mesh::Edge& e) {
 }
 std::string Mesh::Halfedge::to_string() const {
 	std::string s = "h" + std::to_string(id);
-	if (twin) s += " t" + std::to_string(twin->id);
-	if (next) s += " n" + std::to_string(next->id); 
-	if (vertex) s += " v" + std::to_string(vertex->id); 
-	if (edge) s += " e" + std::to_string(edge->id);
-	if (face) s += " f" + std::to_string(face->id);
+	if (twin_idx != INVALID_IDX) s += " t" + std::to_string(twin_idx);
+	if (next_idx != INVALID_IDX) s += " n" + std::to_string(next_idx); 
+	if (vertex_idx != INVALID_IDX) s += " v" + std::to_string(vertex_idx); 
+	if (edge_idx != INVALID_IDX) s += " e" + std::to_string(edge_idx);
+	if (face_idx != INVALID_IDX) s += " f" + std::to_string(face_idx);
 	return s;
 }
 std::ostream& operator << (std::ostream& outs, const Mesh::Halfedge& h) {
@@ -261,7 +244,7 @@ std::ostream& operator << (std::ostream& outs, const Mesh::Halfedge& h) {
 }
 std::string Mesh::Face::to_string() const {
 	std::string s = "f" + std::to_string(id);
-	if (halfedge) s += " h" + std::to_string(halfedge->id);
+	if (halfedge_idx != INVALID_IDX) s += " h" + std::to_string(halfedge_idx);
 	s += " b" + std::to_string(boundary); 
 	return s;
 }
