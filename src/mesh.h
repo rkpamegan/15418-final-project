@@ -26,9 +26,9 @@ public:
             // uint32_t degree() const;
             // Vec3 neighborhood_center() const;
             std::string to_string() const;
-        private:
             Vertex() : halfedge_idx(INVALID_IDX) {};
-            Vertex(uint32_t _id) : id(_id), halfedge_idx(INVALID_IDX) {};
+        private:
+            Vertex(uint32_t _id) : halfedge_idx(INVALID_IDX),  id(_id) {};
         friend class Mesh;
     };
 
@@ -42,9 +42,9 @@ public:
             // TODO: implement edge functions
             // bool on_boundary() const;
             std::string to_string() const;
-        private:
             Edge() : halfedge_idx(INVALID_IDX) {};
-            Edge(uint32_t _id, bool _sharp) : id(_id), sharp(_sharp), halfedge_idx(INVALID_IDX) {};
+        private:
+            Edge(uint32_t _id, bool _sharp) : halfedge_idx(INVALID_IDX), id(_id), sharp(_sharp)  {};
         friend class Mesh;
     };
 
@@ -60,7 +60,7 @@ public:
             Halfedge() : twin_idx(INVALID_IDX), next_idx(INVALID_IDX), vertex_idx(INVALID_IDX), edge_idx(INVALID_IDX), face_idx(INVALID_IDX) {};
             std::string to_string() const;
         private:
-            Halfedge(uint32_t _id) : id(_id), twin_idx(INVALID_IDX), next_idx(INVALID_IDX), vertex_idx(INVALID_IDX), edge_idx(INVALID_IDX), face_idx(INVALID_IDX) {};
+            Halfedge(uint32_t _id) : twin_idx(INVALID_IDX), next_idx(INVALID_IDX), vertex_idx(INVALID_IDX), edge_idx(INVALID_IDX), face_idx(INVALID_IDX), id(_id) {};
         friend class Mesh;
     };
 
@@ -74,9 +74,9 @@ public:
             // TODO: implement face functions
             // float area() const; // area of face;
             std::string to_string() const;
-        private:
             Face() : halfedge_idx(INVALID_IDX) {};
-            Face(uint32_t _id, bool _boundary) : id(_id), boundary(_boundary), halfedge_idx(INVALID_IDX) {};
+        private:
+            Face(uint32_t _id, bool _boundary) :  halfedge_idx(INVALID_IDX), id(_id), boundary(_boundary) {};
         friend class Mesh;
     };
 
@@ -86,7 +86,11 @@ public:
     std::vector<Halfedge> halfedges;
     std::vector<Face> faces;
 
-    // create a mesh from a list of vertices and a list of polygons composed of the vertices
+    /**
+     * Create a mesh from a list of vertices and a list of polygons composed of the vertices.
+     * Vertices for each face MUST be specified in counter-clockwise order
+     */ 
+
     static Mesh from_indexed_faces(std::vector< Vec3 > const &vertices_,  
         std::vector< std::vector< uint32_t > > const &faces_);
     // bool validate() const;

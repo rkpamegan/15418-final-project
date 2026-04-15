@@ -2,7 +2,7 @@ PROGRAM = remesh
 
 CU_FILES = cudaRemesh.cu
 
-CPP_FILES = main.cpp mesh.cpp
+CPP_FILES = main.cpp mesh.cpp test.cpp
 
 
 LDFLAGS = -L/usr/include/c++/11/ -L/usr/local/cuda-11.7/lib64/ -lcudart

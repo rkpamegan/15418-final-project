@@ -1,6 +1,8 @@
 #include "mesh.h"
 #include <stdint.h>
 
+#include "vec3.h"
+
 #include <unordered_map>
 #include <set>
 #include <map>
@@ -110,26 +112,6 @@ Mesh Mesh::from_indexed_faces(std::vector< Vec3 > const &vertices_,
 	for (uint32_t i = 0; i < num_faces; i++) {
 		add_loop(faces_[i], false);
 	}
-	std::printf("%d\n", mesh.vertices.size());
-	for (size_t i = 0; i < mesh.vertices.size(); i++)
-	{
-		std::cout << mesh.vertices[i] << std::endl;
-	}
-
-	for (size_t i = 0; i < mesh.edges.size(); i++)
-	{
-		std::cout << mesh.edges[i] << std::endl;
-	}
-
-	// for (size_t i = 0; i < mesh.halfedges.size(); i++)
-	// {
-	// 	std::cout << mesh.halfedges[i] << std::endl;
-	// }
-
-	// for (size_t i = 0; i < mesh.faces.size(); i++)
-	// {
-	// 	std::cout << mesh.faces[i] << std::endl;
-	// }
 	
 
 	// All halfedges created so far have valid next pointers, but some may be missing twins because they are at a boundary.
@@ -139,7 +121,6 @@ Mesh Mesh::from_indexed_faces(std::vector< Vec3 > const &vertices_,
 
 	//first, look for all un-twinned halfedges to figure out the shape of the boundary:
 	for (auto const &[ from_to, he_idx ] : halfedge_map) {
-		std::printf("(%d -> %d)\n", from_to.first, from_to.second);
 		if (mesh.halfedges[he_idx].twin_idx == INVALID_IDX) {
 			auto ret = next_on_boundary.emplace(from_to.second, from_to.first); //twin needed on the boundary
 			assert(ret.second); //every boundary vertex should have a unique successor because the boundary is "half-disc-like"
@@ -214,6 +195,7 @@ std::string Mesh::Vertex::to_string() const {
 	if (halfedge_idx != INVALID_IDX) {
 		s += " h" + std::to_string(halfedge_idx);
 	}
+	s += " @ " + ::to_string(position);
 	return s;
 }
 

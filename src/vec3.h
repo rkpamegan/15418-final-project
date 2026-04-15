@@ -14,6 +14,7 @@ struct Vec3 {
 		y = 0.0f;
 		z = 0.0f;
 	}
+
 	explicit Vec3(float _x, float _y, float _z) {
 		x = _x;
 		y = _y;
