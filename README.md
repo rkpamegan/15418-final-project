@@ -45,3 +45,30 @@ The project will be implemented using CUDA on the GHC machines. Isotropic remesh
 | 4/27    | Optimize performance                            |
 
 ## Milestone Report
+
+### Summary
+
+Due to coming up with a new proposal and carnival weekend, we haven't been able to complete as much work as we should've up to this point. The initial plan was to build the parallel remesher directly on top of code from 15-362, but we found that that code base was much more complicated than we desired. The graphics engine there is built for practical use and contains many features that we did not want to work with. Therefore we decided to write only the mesh features from scratch using the 362 code base as a reference. For now, we have the Mesh class mostly complete, having changed some parts to better fit our uses. The only missing part is the actual mesh creation function, which takes in some vertices and faces and creates a mesh. 
+
+On the other hand, there is the parallel implementation. As mentioned earlier, we need to rewrite the mesh code from the base; this includes making the core remeshing subroutines (flipping, splitting, and collapsing edges, and smoothing vertices) CUDA functions rather than C++ functions. Although we haven't been able to do this yet - as the implementation of the Mesh class is a prerequisite for the actual operations - the logic is basically given by 15-362 base code. Despite this, we turned pseudocode of the overarching algorithm into actual code by identifying required function calls.
+
+### Goals
+
+It does not seem likely that we will be able to achieve our planned goal. Fixing the representation of the mesh to work with CUDA is a great bottleneck, and it has resulted in us not being able to test or progress. Given this, A "nice to have" would be parallel vertex smoothing, since it seems to be the simplest out of all the subroutines to implement. 
+\newpage
+### Issues
+- The first idea we had to properly perform edge splitting/collapsing was to color edges and only perform operations on a certain color of edge at a time. This may not work 100\% of the time for edge collapses. We currently do not have a solution for this.
+- Splitting and collapsing edges requires allocating more space and removing elements from arrays respectively. This may limit the performance of the algorithm. We also do not know how to solve this.
+- The current implementation of the remesher uses arrays of element structs, which themselves hold pointers to other structs. These get invalidated when data is moved to CUDA devices. We think that reformatting the arrays to be just the data inside the structs and using indices to denote an element (similar to pixels in the CUDA renderer from Assignment 2) is a better idea, so the plan is to rewrite our program in a similar fashion.
+
+### Revised Schedule
+
+| Half-week | Item                                                                                              |
+| --------- | ------------------------------------------------------------------------------------------------- |
+| 4/15-4/18 | Rewrite remesher data representation (Junbo)  <br> Finish mesh creation function (Ryan)           | 
+| 4/19-4/21 | Begin graph coloring algorithms (Ryan) <br> Write vertex smoothing (Junbo)                        |
+| 4/22-4/25 | Finish graph coloring (Ryan) <br> Start edge flip alg (Junbo)                                     |
+| 4/26-4/30 | Finish edge split (Junbo) <br> Write edge split (Ryan) <br> Complete final report (Junbo \& Ryan) |
+
+Since we don't expect to finish the project, this schedule is very optimistic, and it is more likely that we only finish up to graph coloring. 
+
