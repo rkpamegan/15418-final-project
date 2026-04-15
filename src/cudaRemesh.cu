@@ -124,7 +124,7 @@ __global__ void kernel_smooth_vertex(
 
 	Mesh::Vertex v = vertices[index];
 
-	float x = 0.f, y = 0.f, z = 0.f;
+	Vec3 avg_pos;
 
 	uint32_t h_idx = v.halfedge_idx;
 	uint32_t curr_idx = h_idx;
@@ -134,18 +134,15 @@ __global__ void kernel_smooth_vertex(
 		Mesh::Halfedge h = halfedges[curr_idx];
 
 		Mesh::Vertex neighbor = vertices[halfedges[h.twin_idx].vertex_idx];
-		x += neighbor.position.x;
-		y += neighbor.position.y;
-		z += neighbor.position.z;
+		avg_pos += neighbor.position;
 		count++;
 
 		curr_idx = halfedges[h.twin_idx].next_idx;
 	} while (curr_idx != h_idx);
+	
+	avg_pos /= count;
 
-	x /= count;
-	y /= count;
-	z /= count;
-	std::printf("vertex %d: (%f %f %f) -> (%f %f %f)\n", index, v.position.x, v.position.y, v.position.z, x, y, z);
+	std::printf("vertex %d: (%f %f %f) -> (%f %f %f)\n", index, v.position.x, v.position.y, v.position.z, avg_pos.x, avg_pos.y, avg_pos.z);
 	
 }
 
