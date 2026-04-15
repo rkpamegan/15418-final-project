@@ -1,6 +1,7 @@
 /**
  * TODO: Find workaround for emplace_x function calls, as they can cause data races
  * TODO: Graph coloring algorithm for vertices/edges
+ * TODO: Function for copying mesh elements back to original mesh
  */
 
 #include <stdint.h>
@@ -32,33 +33,48 @@ CudaRemesher::~CudaRemesher() {
 		cudaFree(cudaDeviceEdges);
 		cudaFree(cudaDeviceHalfedges);
 		cudaFree(cudaDeviceFaces);
+
+		cudaFree((void**) &numVertices);
+		cudaFree((void**) &numEdges);
+		cudaFree((void**) &numHalfedges);
+		cudaFree((void**) &numFaces);
+
+		cudaFree(edge_color_mask);
+		cudaFree(edge_op_mask);
+		cudaFree(vertex_color_mask);
 	}
 }
 
-void CudaRemesher::setup(Mesh mesh) {
-	cudaMalloc(&cudaDeviceVertices, sizeof(Mesh::Vertex) * mesh.vertices.size());
-	cudaMalloc(&cudaDeviceEdges, sizeof(Mesh::Edge) * mesh.edges.size());
-	cudaMalloc(&cudaDeviceHalfedges, sizeof(Mesh::Halfedge) * mesh.halfedges.size());
-	cudaMalloc(&cudaDeviceFaces, sizeof(Mesh::Face) * mesh.faces.size());
+void CudaRemesher::setup(Mesh _mesh) {
+	mesh = _mesh;
+	cudaMalloc(&cudaDeviceVertices, sizeof(Mesh::Vertex) * _mesh.vertices.size());
+	cudaMalloc(&cudaDeviceEdges, sizeof(Mesh::Edge) * _mesh.edges.size());
+	cudaMalloc(&cudaDeviceHalfedges, sizeof(Mesh::Halfedge) * _mesh.halfedges.size());
+	cudaMalloc(&cudaDeviceFaces, sizeof(Mesh::Face) * _mesh.faces.size());
 
-	cudaMemcpy(cudaDeviceVertices, mesh.vertices.data(), sizeof(Mesh::Vertex) * mesh.vertices.size(), cudaMemcpyHostToDevice);
-	cudaMemcpy(cudaDeviceEdges, mesh.edges.data(), sizeof(Mesh::Edge) * mesh.edges.size(), cudaMemcpyHostToDevice);
-	cudaMemcpy(cudaDeviceHalfedges, mesh.halfedges.data(), sizeof(Mesh::Halfedge) * mesh.halfedges.size(), cudaMemcpyHostToDevice);
-	cudaMemcpy(cudaDeviceFaces, mesh.faces.data(), sizeof(Mesh::Face) * mesh.faces.size(), cudaMemcpyHostToDevice);
+	cudaMemcpy(cudaDeviceVertices, _mesh.vertices.data(), sizeof(Mesh::Vertex) * _mesh.vertices.size(), cudaMemcpyHostToDevice);
+	cudaMemcpy(cudaDeviceEdges, _mesh.edges.data(), sizeof(Mesh::Edge) * _mesh.edges.size(), cudaMemcpyHostToDevice);
+	cudaMemcpy(cudaDeviceHalfedges, _mesh.halfedges.data(), sizeof(Mesh::Halfedge) * _mesh.halfedges.size(), cudaMemcpyHostToDevice);
+	cudaMemcpy(cudaDeviceFaces, _mesh.faces.data(), sizeof(Mesh::Face) * _mesh.faces.size(), cudaMemcpyHostToDevice);
 
 	cudaMalloc((void**) &numVertices, sizeof(uint32_t));
 	cudaMalloc((void**) &numEdges, sizeof(uint32_t));
 	cudaMalloc((void**) &numHalfedges, sizeof(uint32_t));
 	cudaMalloc((void**) &numFaces, sizeof(uint32_t));
 
-	uint32_t v_size = mesh.vertices.size();
+	uint32_t v_size = _mesh.vertices.size();
 	cudaMemcpy((void*) &numVertices, (void*) &v_size, 1, cudaMemcpyHostToDevice);
-	uint32_t e_size = mesh.edges.size();
+	uint32_t e_size = _mesh.edges.size();
 	cudaMemcpy((void*) &numEdges, (void*) &e_size, 1, cudaMemcpyHostToDevice);
-	uint32_t h_size = mesh.halfedges.size();
+	uint32_t h_size = _mesh.halfedges.size();
 	cudaMemcpy((void*) &numHalfedges, (void*) &h_size, 1, cudaMemcpyHostToDevice);
-	uint32_t f_size = mesh.faces.size();
+	uint32_t f_size = _mesh.faces.size();
 	cudaMemcpy((void*) &numFaces, (void*) &f_size, 1, cudaMemcpyHostToDevice);
+
+	cudaMalloc(&edge_lengths, sizeof(float) * numEdges);
+	cudaMalloc(&edge_color_mask, sizeof(int) * numEdges);
+	cudaMalloc(&edge_op_mask, sizeof(int) * numEdges);
+	cudaMalloc(&vertex_color_mask, sizeof(int) * numVertices);
 }
 
 /**
@@ -69,37 +85,72 @@ void CudaRemesher::setup(Mesh mesh) {
  *  2.
  *
  */ 
-__global__ void kernel_color_vertices(Mesh::Vertex* vertices) { }
-__global__ void kernel_color_edges(Mesh::Edge* edges) { }
+__global__ void kernel_color_vertices(Mesh::Vertex* vertices, uint32_t num_vertices,int* color_mask) { }
+__global__ void kernel_color_edges(Mesh::Edge* edges, uint32_t num_edges, int* color_mask) { }
 
-__global__ void kernel_smooth_vertex() { }
+__global__ void kernel_smooth_vertex(Mesh::Vertex* vertices, uint32_t num_vertices, int color) { }
 
 /**
  * Populates a mask of size numEdges with the edges
  * which should be flipped
  */
-__global__ void kernel_get_flip_edges(Mesh::Edge* edges, int* mask) { }
-__global__ void kernel_flip_edge(Mesh::Edge* edges, int color) { }
+__global__ void kernel_get_flip_edges(Mesh::Edge* edges, uint32_t num_edges, int* op_mask) { }
+__global__ void kernel_flip_edge(Mesh::Edge* edges, uint32_t num_edges, int color) { }
+
+
+__device__ void kernel_get_edge_lengths(Mesh::Edge* edges, float* lengths, uint32_t num_edges)
+{
+	int index = blockDim.x * blockIdx.x + threadIdx.x;
+	if (index > num_edges) return;
+
+	Mesh::Edge* e = &edges[index];
+	Mesh::Vertex* const v1 = e->halfedge->vertex;
+	Mesh::Vertex* const v2 = e->halfedge->twin->vertex;
+
+	float dx = (v1->position.x - v2->position.x);
+	float dy = (v1->position.y - v2->position.y);
+	float dz = (v1->position.z - v2->position.z);
+
+	lengths[index] = std::sqrt(dx * dx + dy * dy + dz * dz);
+}
 
 /**
  * Populates a mask of size numEdges with the edges
  * which should be collapsed
  */
-__global__ void kernel_get_collapse_edges(Mesh::Edge* edges, int* mask) { }
-__global__ void kernel_collapse_edge(Mesh::Edge* edges, int color) { }
+__global__ void kernel_get_collapse_edges(float* lengths, uint32_t num_edges, float avg_len, float collapse_factor, int* op_mask) {
+	int index = blockDim.x * blockIdx.x + threadIdx.x;
+	if (index > num_edges) return;
+	
+	op_mask[index] = lengths[index] < avg_len * collapse_factor;
+}
+__global__ void kernel_collapse_edge(Mesh::Edge* edges, uint32_t num_edges, int color) { }
 
 /**
  * Populates a mask of size numEdges with the edges
  * which should be split
  */
-__global__ void kernel_get_split_edges(Mesh::Edge* edges, int* mask) { }
-__global__ void kernel_split_edge(Mesh::Edge* edges, int color) { }
+__global__ void kernel_get_split_edges(float* lengths, uint32_t num_edges, float avg_len, float split_factor, int* op_mask) {
+	int index = blockDim.x * blockIdx.x + threadIdx.x;
+	if (index > num_edges) return;
+
+	op_mask[index] = lengths[index] > avg_len * split_factor;
+}
+
+__global__ void kernel_split_edge(Mesh::Edge* edges, uint32_t num_edges, int color) {
+	int index = blockDim.x * blockIdx.x + threadIdx.x;
+	if (index > num_edges) return;
+
+	Mesh::Edge e = edges[index];
+	if (e.color != color) return;
+
+}
 
 //isotropic_remesh: improves mesh quality through local operations.
 // Do note that this requires a working implementation of EdgeSplit, EdgeFlip, and EdgeCollapse
 void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
-	// dim3 blockDim(256, 0);
-	// dim3 gridDim(1, 0);
+	dim3 blockDim;
+	dim3 gridDim;
 	
 	// kernel_get_split_edges<<<blockDim, gridDim>>>();
 
@@ -124,23 +175,33 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 	 *	5. Repeat steps 1-4 `num_iters` times.
 	 */
 
+	//NOTE: many of the steps in this function will be modifying the element
+	//      lists they are looping over. Take care to avoid use-after-free
+	//      or infinite-loop problems.
+
 	for (int t = 0; t < params.num_iters; t++) {
 		std::printf("iteration %d of remeshing\n", t);
-		// kernel_color_edges<<<>>>(edge_color_mask);
-
+		blockDim = dim3(256);
+		gridDim = dim3((numEdges + blockDim.x - 1 ) / blockDim.x);
+		kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, numEdges, edge_color_mask);
+		
 		// color_mask holds color of corresponding edge
 		// get max color in color_mask
 		int max_color = *thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
-		// kernel_get_flip_edges<<<>>>(cudaDeviceEdges, edge_op_mask);
+		
+		
+		kernel_get_flip_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, numEdges, edge_op_mask);
 		for (int c = 0; c <= max_color; c++) {
 			std::printf("Flipping edges of color %d\n", c);
 			// flips all edges with color c if flipping them increases regular-ness
-			// kernel_flip_edges<<<>>>(cudaDeviceEdges, c);
+			kernel_flip_edge<<<blockDim, gridDim>>>(cudaDeviceEdges, numEdges, c);
 		}
-
+			
+		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, edge_lengths, numEdges);
+		float avg_len = thrust::reduce(thrust::device, edge_lengths, edge_lengths + numEdges, 0.0f, thrust::plus<float>());
 		// vertex incidence may change after flipping, so we need to recolor
-		// kernel_color_edges<<<>>>(edge_color_mask);
-		// kernel_get_split_edges<<<>>>(cudaDeviceEdges, edge_op_mask);
+		kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, numEdges, edge_color_mask);
+		kernel_get_split_edges<<<gridDim, blockDim>>>(edge_lengths, numEdges, avg_len, params.split_factor, edge_op_mask);
 		max_color = *thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
 
 		// TODO: allocate space for all elements that will be produced during splits
@@ -148,31 +209,34 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		for (int c = 0; c <= max_color; c++) {
 			std::printf("Splitting edges of color %d\n", c);
 			// flips all edges with color c if they are sufficiently larger than average
-			// kernel_split_edges<<<>>>(cudaDeviceEdges, c);
+			kernel_split_edge<<<gridDim, blockDim>>>(cudaDeviceEdges, numEdges, c);
 		}
 
 		// TODO: recalculate element counts
 
 		// similar to post-flip recoloring
-		// kernel_color_edges<<<>>>(edge_color_mask);
-		// kernel_get_collapse_edges<<<>>>(cudaDeviceEdges, edge_op_mask);
+		kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, numEdges, edge_color_mask);
+
+		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, edge_lengths, numEdges);
+		float avg_len = thrust::reduce(thrust::device, edge_lengths, edge_lengths + numEdges, 0.0f, thrust::plus<float>());
+
+		kernel_get_collapse_edges<<<gridDim, blockDim>>>(edge_lengths, numEdges, avg_len, params.collapse_factor, edge_op_mask);
 		max_color = *thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
 		
 		for (int c = 0; c <= max_color; c++) {
 			std::printf("Collapsing edges of color %d\n", c);
 			// collapses all edges with color c if they are sufficiently smaller than average 
-			// kernel_collapse_edges<<<>>>(cudaDeviceEdges, c);
+			kernel_collapse_edge<<<gridDim, blockDim>>>(cudaDeviceEdges, numEdges, c);
 		}
 		
+		gridDim = dim3((numVertices + blockDim.x - 1) / blockDim.x);
 		// kernel_color_vertices<<<>>>(cudaDeviceVertices, vertex_color_mask);
 		max_color = *thrust::max_element(thrust::device, vertex_color_mask, vertex_color_mask + numVertices);
 		for (int c = 0; c <= max_color; c++) {
 			std::printf("Smoothing vertices of color %d\n", c);
-			// kernel_smooth_vertex<<<>>>(cudaDeviceVertices, c);
+			kernel_smooth_vertex<<<gridDim, blockDim>>>(cudaDeviceVertices, numVertices, c);
 		}
 	}
-	//NOTE: many of the steps in this function will be modifying the element
-	//      lists they are looping over. Take care to avoid use-after-free
-	//      or infinite-loop problems.
+	
 
 }

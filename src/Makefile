@@ -2,7 +2,7 @@ PROGRAM = remesh
 
 CU_FILES = cudaRemesh.cu
 
-CPP_FILES = main.cpp
+CPP_FILES = main.cpp mesh.cpp
 
 
 LDFLAGS = -L/usr/include/c++/11/ -L/usr/local/cuda-11.7/lib64/ -lcudart
@@ -22,7 +22,7 @@ CPP_OBJS = $(patsubst %.cpp, $(OBJ_DIR)/%.o, $(CPP_FILES))
 all: $(PROGRAM)
 
 clean:
-	rm -rf $(PROGRAM) *.o
+	rm -rf $(PROGRAM) $(OBJ_DIR)/*.o
 
 $(PROGRAM): $(CU_OBJS) $(CPP_OBJS)
 	$(CXX) $(CXX_FLAGS) -o $@ $^ $(LDFLAGS)

@@ -22,6 +22,7 @@ public:
             // bool on_boundary() const;
             // uint32_t degree() const;
             // Vec3 neighborhood_center() const;
+            std::string to_string() const;
         private:
             Vertex() = default;
             Vertex(uint32_t _id) : id(_id) {};
@@ -37,7 +38,7 @@ public:
             
             // TODO: implement edge functions
             // bool on_boundary() const;
-            // float length() const;
+            std::string to_string() const;
         private:
             Edge() = default;
             Edge(uint32_t _id, bool _sharp) : id(_id), sharp(_sharp) {};
@@ -53,8 +54,9 @@ public:
             Face* face; // the face this halfedge is along
 
             uint32_t id;
+            Halfedge() : twin(NULL), next(NULL), vertex(NULL), edge(NULL), face(NULL) {};
+            std::string to_string() const;
         private:
-            Halfedge() = default;
             Halfedge(uint32_t _id) : id(_id) {};
         friend class Mesh;
     };
@@ -68,17 +70,12 @@ public:
 
             // TODO: implement face functions
             // float area() const; // area of face;
+            std::string to_string() const;
         private:
             Face() = default;
             Face(uint32_t _id, bool _boundary) : id(_id), boundary(_boundary) {};
         friend class Mesh;
     };
-
-    // next id to be assigned to an element of each type
-    uint32_t next_v_id;
-    uint32_t next_h_id;
-    uint32_t next_e_id;
-    uint32_t next_f_id;
 
     // list of elements of each type composing this mesh
     std::vector<Vertex> vertices;
@@ -87,11 +84,21 @@ public:
     std::vector<Face> faces;
 
     // create a mesh from a list of vertices and a list of polygons composed of the vertices
-    Mesh from_indexed_faces(std::vector< Vec3 > const &vertices_,  std::vector< std::vector< uint32_t > > const &faces_);
+    static Mesh from_indexed_faces(std::vector< Vec3 > const &vertices_,  
+        std::vector< std::vector< uint32_t > > const &faces_);
+    // bool validate() const;
+    void describe() const;
+    Mesh() = default;
+    ~Mesh() = default;
+    private:
+        // next id to be assigned to an element of each type
+        uint32_t next_v_id = 0;
+        uint32_t next_h_id = 0;
+        uint32_t next_e_id = 0;
+        uint32_t next_f_id = 0;
 
-    Vertex emplace_vertex();
-    Edge emplace_edge(bool sharp);
-    Face emplace_face(bool boundary);
-    Halfedge emplace_halfedge();
-// bool validate() const;
+        Vertex emplace_vertex();
+        Edge emplace_edge(bool sharp);
+        Face emplace_face(bool boundary);
+        Halfedge emplace_halfedge();
 };
