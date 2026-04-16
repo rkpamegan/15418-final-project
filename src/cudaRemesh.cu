@@ -12,6 +12,8 @@
 #include "thrust/reduce.h"
 #include "thrust/functional.h"
 
+#include <cstdlib>
+
 #include "mesh.h"
 #include "cudaRemesh.h"
 #include "vec3.h"
@@ -52,6 +54,8 @@ CudaRemesher::~CudaRemesher() {
 		cudaFree(edge_op_mask);
 		cudaFree(vertex_color_mask);
 		cudaFree(vertex_pos);
+		cudaFree(vertex_priorities);
+		cudaFree(d_coloring_done);
 	}
 }
 
@@ -80,6 +84,15 @@ void CudaRemesher::setup(Mesh &_mesh) {
 	cudaMalloc(&vertex_color_mask, sizeof(int) * numVertices);
 	cudaMalloc(&vertex_pos, sizeof(float) * 3 * numVertices);
 	std::printf("malloc'd masks\n");
+
+	// Generate random priorities for graph coloring
+	std::vector<int> h_priorities(numVertices);
+	for (uint32_t i = 0; i < numVertices; i++) {
+		h_priorities[i] = rand();
+	}
+	cudaMalloc(&vertex_priorities, sizeof(int) * numVertices);
+	cudaMemcpy(vertex_priorities, h_priorities.data(), sizeof(int) * numVertices, cudaMemcpyHostToDevice);
+	cudaMalloc(&d_coloring_done, sizeof(bool));
 }
 
 // Updates mesh fields to the remeshed values
@@ -97,13 +110,71 @@ void CudaRemesher::update_mesh() {
 
 /**
  * Ideas for graph coloring:
- * 	1. 	While graph not colored,
- * 		a.	Choose from uncolored objects with some probability
- * 		b.	Make object's color the lowest color not found in neighborhood.
- *  2.
- *
+ * 	Jones-Plassmann parallel graph coloring:
+ * 	Each vertex has a random priority. Each round, a vertex colors itself
+ * 	only if it has the highest priority among all its uncolored neighbors.
+ * 	It picks the smallest color not used by any already-colored neighbor.
  */ 
-__global__ void kernel_color_vertices(Mesh::Vertex* vertices, uint32_t num_vertices,int* color_mask) { }
+__global__ void kernel_color_vertices(
+	Mesh::Vertex* vertices, Mesh::Halfedge* halfedges,
+	uint32_t num_vertices, int* color_mask, int* priorities, bool* done)
+{
+	int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	if (idx >= num_vertices) return;
+	if (color_mask[idx] != -1) return; // already colored
+
+	// Check if this vertex has higher priority than all uncolored neighbors
+	bool is_local_max = true;
+	// Track which colors are used by colored neighbors (bitmask, supports up to 32 colors)
+	uint32_t used_colors = 0;
+
+	// Walk around the vertex using halfedges to find all neighbors
+	uint32_t start_he = vertices[idx].halfedge_idx;
+	if (start_he == INVALID_IDX) {
+		color_mask[idx] = 0; // isolated vertex
+		return;
+	}
+
+	uint32_t he = start_he;
+	do {
+		// he goes out from vertex idx, twin goes back, twin->next goes out from neighbor
+		uint32_t twin_he = halfedges[he].twin_idx;
+		if (twin_he == INVALID_IDX) break;
+
+		uint32_t neighbor = halfedges[twin_he].vertex_idx;
+
+		if (color_mask[neighbor] == -1) {
+			// neighbor is uncolored — check priority
+			if (priorities[neighbor] > priorities[idx]) {
+				is_local_max = false;
+				break;
+			}
+			// tie-break by index
+			if (priorities[neighbor] == priorities[idx] && neighbor > idx) {
+				is_local_max = false;
+				break;
+			}
+		} else {
+			// neighbor is colored — record its color
+			if (color_mask[neighbor] < 32) {
+				used_colors |= (1u << color_mask[neighbor]);
+			}
+		}
+
+		// move to next outgoing halfedge around vertex
+		he = halfedges[twin_he].next_idx;
+		if (he == INVALID_IDX) break;
+	} while (he != start_he);
+
+	if (is_local_max) {
+		// pick smallest color not used by neighbors
+		int color = 0;
+		while (used_colors & (1u << color)) color++;
+		color_mask[idx] = color;
+	} else {
+		*done = false; // still have uncolored vertices
+	}
+}
 __global__ void kernel_color_edges(Mesh::Edge* edges, uint32_t num_edges, int* color_mask) {
 
 }
@@ -307,9 +378,16 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		*/
 		
 		gridDim = dim3((numVertices + blockDim.x - 1) / blockDim.x);
-		// kernel_color_vertices<<<>>>(cudaDeviceVertices, vertex_color_mask);
-		// max_color = *thrust::max_element(thrust::device, vertex_color_mask, vertex_color_mask + numVertices);
-		int max_color = 0;
+		// Color vertices using Jones-Plassmann algorithm
+		cudaMemset(vertex_color_mask, -1, sizeof(int) * numVertices); // reset all to -1 (uncolored)
+		bool h_done = false;
+		while (!h_done) {
+			h_done = true;
+			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
+			kernel_color_vertices<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceHalfedges, numVertices, vertex_color_mask, vertex_priorities, d_coloring_done);
+			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
+		}
+		int max_color = *thrust::max_element(thrust::device, vertex_color_mask, vertex_color_mask + numVertices);
 		std::printf("num vertices = %d\n", numVertices);
 		for (int c = 0; c <= max_color; c++) {
 			std::printf("Smoothing vertices of color %d\n", c);
