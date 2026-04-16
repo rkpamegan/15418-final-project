@@ -32,6 +32,7 @@ class CudaRemesher {
         float* vertex_pos; // new vertex positions in the form of [x1, y1, z1, x2, y2, z2, ...]
         int* vertex_color_mask; // the color of each vertex
         int* vertex_priorities; // random priority for graph coloring
+        int* edge_priorities; // random priority for edge graph coloring
         bool* d_coloring_done; // device flag for coloring convergence
 
         void update_mesh();
