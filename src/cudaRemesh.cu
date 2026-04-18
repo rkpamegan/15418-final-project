@@ -33,6 +33,8 @@ CudaRemesher::CudaRemesher() {
     int* edge_color_mask = NULL;
 	int* edge_op_mask = NULL;
 	int* vertex_color_mask = NULL;
+	Vec3* vertex_pos = NULL;
+	Vec3* vertex_normals = NULL;
 }
 
 CudaRemesher::~CudaRemesher() {
@@ -54,6 +56,7 @@ CudaRemesher::~CudaRemesher() {
 		cudaFree(edge_op_mask);
 		cudaFree(vertex_color_mask);
 		cudaFree(vertex_pos);
+		cudaFree(vertex_normals);
 		cudaFree(vertex_priorities);
 		cudaFree(edge_priorities);
 		cudaFree(d_coloring_done);
@@ -83,7 +86,8 @@ void CudaRemesher::setup(Mesh &_mesh) {
 	cudaMalloc(&edge_color_mask, sizeof(int) * numEdges);
 	cudaMalloc(&edge_op_mask, sizeof(int) * numEdges);
 	cudaMalloc(&vertex_color_mask, sizeof(int) * numVertices);
-	cudaMalloc(&vertex_pos, sizeof(float) * 3 * numVertices);
+	cudaMalloc(&vertex_pos, sizeof(Vec3) * numVertices);
+	cudaMalloc(&vertex_normals, sizeof(Vec3) * numVertices);
 	std::printf("malloc'd masks\n");
 
 	// Generate random priorities for graph coloring
@@ -267,11 +271,46 @@ __global__ void kernel_color_edges(
 	}
 }
 
+/**
+ * Computes the normal of every vertex in the mesh based on its neighbors
+ * Original code provided by 15-362 course staff
+ */
+__global__ void kernel_get_vertex_normals(
+	Mesh::Vertex* vertices,
+	Mesh::Halfedge* halfedges,
+	Mesh::Face* faces,
+	Vec3* vertex_normals,
+	uint32_t num_vertices,
+	uint32_t num_halfedges
+) {
+	int index = blockDim.x * blockIdx.x + threadIdx.x;
+	if (index > num_vertices) return;
+
+	Vec3 n = Vec3(0.0f, 0.0f, 0.0f);
+	Vec3 pi = vertices[index].position;
+	uint32_t h_idx = vertices[index].halfedge_idx;
+	uint32_t curr_idx = h_idx;
+
+	//walk clockwise around the vertex:
+	do {
+		Mesh::Halfedge h = halfedges[curr_idx];
+		Vec3 pk = vertices[halfedges[h.next_idx].vertex_idx].position;
+		h = halfedges[halfedges[h.twin_idx].next_idx];
+		Vec3 pj = vertices[halfedges[h.next_idx].vertex_idx].position;
+		//pi,pk,pj is a ccw-oriented triangle covering the area of h->face incident on the vertex
+		if (!faces[h.face_idx].boundary) n += cross(pj - pi, pk - pi);
+	} while (curr_idx != h_idx);
+	vertex_normals[index] = n.unit();
+}
+
 __global__ void kernel_smooth_vertex(
 	Mesh::Vertex* vertices,
 	Mesh::Edge* edges,
 	Mesh::Halfedge* halfedges,
 	Mesh::Face* faces,
+	int* vertex_color_mask,
+	Vec3* vertex_normals,
+	Vec3* vertex_pos,
 	uint32_t num_vertices,
 	uint32_t num_edges,
 	uint32_t num_halfedges,
@@ -281,6 +320,7 @@ __global__ void kernel_smooth_vertex(
 ) {
 	int index = blockDim.x * blockIdx.x + threadIdx.x;
 	if (index > num_vertices) return;
+	if (vertex_color_mask[index] != color) return;
 
 	Mesh::Vertex v = vertices[index];
 
@@ -302,19 +342,46 @@ __global__ void kernel_smooth_vertex(
 	
 	center /= count;
 
+	center = v.position + smoothing_factor * (center - v.position);
+	Vec3 normal = vertex_normals[index];
+	center = center - dot(normal, center) * normal;
 	std::printf("vertex %d: (%f %f %f) -> (%f %f %f)\n", index, v.position.x, v.position.y, v.position.z, center.x, center.y, center.z);
-	vertices[index].position = v.position + smoothing_factor * (center - v.position);
+	vertex_pos[index] = center;
+}
+
+__global__ void kernel_update_vertex_pos(
+	Mesh::Vertex* vertices,
+	Vec3* vertex_pos,
+	uint32_t num_vertices
+) {
+	int index = blockDim.x * blockIdx.x + threadIdx.x;
+	if (index > num_vertices) return;
+
+	vertices[index].position = vertex_pos[index];
 }
 
 /**
  * Populates a mask of size num Edges with the edges
  * which should be flipped
  */
-__global__ void kernel_get_flip_edges(Mesh::Edge* edges, uint32_t num_edges, int* op_mask) { }
+__global__ void kernel_get_flip_edges(
+	Mesh::Vertex* vertices,
+	Mesh::Edge* edges, 
+	uint32_t num_vertices,
+	uint32_t num_edges, 
+	int* op_mask
+) {
+	
+}
 __global__ void kernel_flip_edge(Mesh::Edge* edges, uint32_t num_edges, int color) { }
 
 
-__global__ void kernel_get_edge_lengths(Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Vertex* vertices, float* lengths, uint32_t num_edges)
+__global__ void kernel_get_edge_lengths(
+	Mesh::Edge* edges, 
+	Mesh::Halfedge* halfedges, 
+	Mesh::Vertex* vertices, 
+	float* lengths,
+	uint32_t num_edges)
 {
 	int index = blockDim.x * blockIdx.x + threadIdx.x;
 	if (index > num_edges) return;
@@ -401,7 +468,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 	 *				toward the centroid of its neighbors, by params.smoothing_step of
 	 *				the total distance (so, smoothing_step of 1 would move all the way,
 	 *				smoothing_step of 0 would not move). 
-	 *			ii.	Repeat the tangential smoothing part params.smoothing_iterations times.
+	 *			ii.	Repeat the tangential smoothing part params.smoothing_iters times.
 	 *	5. Repeat steps 1-4 `num_iters` times.
 	 */
 
@@ -413,7 +480,6 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		std::printf("iteration %d of remeshing\n", t);
 		blockDim = dim3(256);
 		gridDim = dim3((numEdges + blockDim.x - 1 ) / blockDim.x);
-		/*
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
 		h_done = false;
 		while (!h_done) {
@@ -425,8 +491,9 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		
 		// color_mask holds color of corresponding edge
 		// get max color in color_mask
-		int max_color = *thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
-		
+		int* cuda_max_color = thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
+		int max_color;
+		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 		
 		kernel_get_flip_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, numEdges, edge_op_mask);
 		for (int c = 0; c <= max_color; c++) {
@@ -434,7 +501,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			// flips all edges with color c if flipping them increases regular-ness
 			kernel_flip_edge<<<blockDim, gridDim>>>(cudaDeviceEdges, numEdges, c);
 		}
-		*/
+
 		/*
 		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, edge_lengths, numEdges);
 		cudaDeviceSynchronize();
@@ -491,14 +558,21 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			kernel_color_vertices<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceHalfedges, numVertices, vertex_color_mask, vertex_priorities, d_coloring_done);
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
-		int max_color = *thrust::max_element(thrust::device, vertex_color_mask, vertex_color_mask + numVertices);
-		std::printf("num vertices = %d\n", numVertices);
-		for (int c = 0; c <= max_color; c++) {
-			std::printf("Smoothing vertices of color %d\n", c);
-		
-			kernel_smooth_vertex<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceEdges,
-														cudaDeviceHalfedges, cudaDeviceFaces,
-														numVertices, numEdges, numHalfedges, numFaces, params.smoothing_step, c);
+
+		cuda_max_color = thrust::max_element(thrust::device, vertex_color_mask, vertex_color_mask + numVertices);
+		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
+		for (int i = 0; i < params.smoothing_iters; i++) {
+			std::printf("iteration %d of vertex smoothing\n", i);
+			for (int c = 0; c <= max_color; c++) {
+				// smooth all vertices of each color
+				std::printf("Smoothing vertices of color %d\n", c);
+				kernel_smooth_vertex<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceEdges,
+					cudaDeviceHalfedges, cudaDeviceFaces, vertex_color_mask, vertex_normals, vertex_pos,
+					numVertices, numEdges, numHalfedges, numFaces, params.smoothing_step, c);
+					cudaDeviceSynchronize();
+			}
+			// update vertex positions
+			kernel_update_vertex_pos<<<gridDim, blockDim>>>(cudaDeviceVertices, vertex_pos, numVertices);
 			cudaDeviceSynchronize();
 		}
 	}
