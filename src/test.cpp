@@ -1,6 +1,7 @@
 #include "mesh.h"
 #include "cudaRemesh.h"
 #include "test.h"
+
 int test_split_edge()
 {
     CudaRemesher* remesher = new CudaRemesher();
@@ -37,7 +38,7 @@ int test_smooth_vertex() {
 	// std::printf("finished mesh creation\n");
     remesher->setup(mesh);
 	Isotropic_Remesh_Params params{
-		1, 1.5f, 0.5f, 1, 1.0f
+		1, 1.5f, 0.5f, 1, 0.1f
 	};
 	remesher->isotropic_remesh(params);
 

@@ -1,3 +1,7 @@
+/**
+ * Original code provided by 15-362 Course Staff, adapted for project use
+ * TODO: normal() function for vertex, in order to compute tangential smoothing
+ */
 #include "mesh.h"
 #include <stdint.h>
 
@@ -9,13 +13,6 @@
 
 #include <iostream>
 
-// float Mesh::Edge::length() const {
-// 	Vertex* const v1 = halfedge->vertex;
-// 	Vertex* const v2 = halfedge->twin->vertex;
-
-// 	Vec3 d = v1->position - v2->position;
-// 	return d.norm();
-// }
 std::ostream& operator << (std::ostream& outs, const Mesh::Vertex& v);
 std::ostream& operator << (std::ostream& outs, const Mesh::Edge& e);
 std::ostream& operator << (std::ostream& outs, const Mesh::Halfedge& h);

@@ -117,6 +117,7 @@ __global__ void kernel_smooth_vertex(
 	uint32_t num_edges,
 	uint32_t num_halfedges,
 	uint32_t num_faces,
+	float smoothing_factor,
 	int color
 ) {
 	int index = blockDim.x * blockIdx.x + threadIdx.x;
@@ -124,7 +125,7 @@ __global__ void kernel_smooth_vertex(
 
 	Mesh::Vertex v = vertices[index];
 
-	Vec3 avg_pos;
+	Vec3 center;
 
 	uint32_t h_idx = v.halfedge_idx;
 	uint32_t curr_idx = h_idx;
@@ -134,16 +135,16 @@ __global__ void kernel_smooth_vertex(
 		Mesh::Halfedge h = halfedges[curr_idx];
 
 		Mesh::Vertex neighbor = vertices[halfedges[h.twin_idx].vertex_idx];
-		avg_pos += neighbor.position;
+		center += neighbor.position;
 		count++;
 
 		curr_idx = halfedges[h.twin_idx].next_idx;
 	} while (curr_idx != h_idx);
 	
-	avg_pos /= count;
+	center /= count;
 
-	std::printf("vertex %d: (%f %f %f) -> (%f %f %f)\n", index, v.position.x, v.position.y, v.position.z, avg_pos.x, avg_pos.y, avg_pos.z);
-	
+	std::printf("vertex %d: (%f %f %f) -> (%f %f %f)\n", index, v.position.x, v.position.y, v.position.z, center.x, center.y, center.z);
+	vertices[index].position = v.position + smoothing_factor * (center - v.position);
 }
 
 /**
@@ -316,7 +317,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		
 			kernel_smooth_vertex<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceEdges,
 														cudaDeviceHalfedges, cudaDeviceFaces,
-														numVertices, numEdges, numHalfedges, numFaces, c);
+														numVertices, numEdges, numHalfedges, numFaces, params.smoothing_step, c);
 			cudaDeviceSynchronize();
 		}
 	}
