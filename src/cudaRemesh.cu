@@ -898,7 +898,6 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			kernel_flip_edge<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_color_mask, edge_op_mask, c);
 		}
 
-		/*
 		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, edge_lengths, numEdges);
 		cudaDeviceSynchronize();
 
@@ -915,6 +914,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 
+		// === SPLIT ===
 		kernel_get_split_edges<<<gridDim, blockDim>>>(edge_lengths, numEdges, avg_len, params.split_factor, edge_op_mask);
 		cudaDeviceSynchronize();
 
@@ -995,8 +995,39 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		}
 		cudaFree(split_offsets);
 		split_offsets = NULL;
-		*/
-		
+
+		// === COLLAPSE ===
+		// Recompute edge lengths (split may have changed the mesh)
+		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, edge_lengths, numEdges);
+		cudaDeviceSynchronize();
+
+		avg_len = thrust::reduce(thrust::device, edge_lengths, edge_lengths + numEdges, 0.0f, thrust::plus<float>()) / std::max(1U, numEdges);
+		std::printf("average length after split is %f\n", avg_len);
+
+		// Recolor edges (split changed connectivity)
+		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
+		h_done = false;
+		while (!h_done) {
+			h_done = true;
+			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
+			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
+			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
+		}
+
+		kernel_get_collapse_edges<<<gridDim, blockDim>>>(edge_lengths, numEdges, avg_len, params.collapse_factor, edge_op_mask);
+		cudaDeviceSynchronize();
+
+		cuda_max_color = thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
+		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
+
+		for (int c = 0; c <= max_color; c++) {
+			std::printf("Collapsing edges of color %d\n", c);
+			kernel_collapse_edge<<<gridDim, blockDim>>>(
+				cudaDeviceVertices, cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces,
+				edge_color_mask, edge_op_mask, numEdges, c);
+			cudaDeviceSynchronize();
+		}
+
 		gridDim = dim3((numVertices + blockDim.x - 1) / blockDim.x);
 		// Color vertices using Jones-Plassmann algorithm
 		cudaMemset(vertex_color_mask, -1, sizeof(int) * numVertices); // reset all to -1 (uncolored)
