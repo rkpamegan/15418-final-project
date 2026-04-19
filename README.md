@@ -52,6 +52,50 @@ Due to coming up with a new proposal and carnival weekend, we haven't been able 
 
 On the other hand, there is the parallel implementation. As mentioned earlier, we need to rewrite the mesh code from the base; this includes making the core remeshing subroutines (flipping, splitting, and collapsing edges, and smoothing vertices) CUDA functions rather than C++ functions. Although we haven't been able to do this yet - as the implementation of the Mesh class is a prerequisite for the actual operations - the logic is basically given by 15-362 base code. Despite this, we turned pseudocode of the overarching algorithm into actual code by identifying required function calls.
 
+### Algorithm Pipeline
+
+To manage the complex topological changes in parallel, we've structured our CUDA kernels into the following pipeline. We utilize **Graph Coloring** to prevent race conditions when modifying adjacent elements, and **Prefix Sums** to dynamically manage memory allocations during edge splits.
+
+```text
+isotropic_remesh()  ← CPU function, loops num_iters times
+│
+├── Each Iteration:
+│
+│   ┌─ Step 1: Edge Coloring (Assign colors for parallel safety)
+│   │   kernel_color_edges  ← Loop until all edges are colored
+│   │
+│   ├─ Step 2: Flip (Improve triangle quality)
+│   │   kernel_get_flip_edges   ← Mark edges to flip
+│   │   for each color c:
+│   │       kernel_flip_edge    ← Flip edges of color c
+│   │
+│   ├─ Step 3: Split (Refine long edges)
+│   │   kernel_get_edge_lengths ← Calculate edge lengths
+│   │   compute avg_len         ← thrust::reduce for average
+│   │   recolor edges           ← Topology changed by flip
+│   │   kernel_get_split_edges  ← Mark edges to split
+│   │   prefix sum              ← Calculate write offsets for new edges
+│   │   realloc arrays          ← Allocate space for new elements
+│   │   for each color c:
+│   │       kernel_split_edge   ← Split edges of color c
+│   │
+│   ├─ Step 4: Collapse (Simplify short edges)
+│   │   kernel_get_edge_lengths ← Recalculate edge lengths (topology changed)
+│   │   recolor edges           ← Topology changed by split
+│   │   kernel_get_collapse_edges ← Mark edges to collapse
+│   │   for each color c:
+│   │       kernel_collapse_edge  ← Collapse edges of color c
+│   │
+│   ├─ Step 5: Smooth (Relax vertex positions)
+│   │   kernel_color_vertices   ← Color vertices
+│   │   for smoothing_iters:
+│   │       for each color c:
+│   │           kernel_smooth_vertex     ← Compute new positions
+│   │       kernel_update_vertex_pos     ← Write back positions
+│   │
+│   └── Loop back to Step 1 for next iteration
+
+
 ### Goals
 
 It does not seem likely that we will be able to achieve our planned goal. Fixing the representation of the mesh to work with CUDA is a great bottleneck, and it has resulted in us not being able to test or progress. Given this, A "nice to have" would be parallel vertex smoothing, since it seems to be the simplest out of all the subroutines to implement. 
