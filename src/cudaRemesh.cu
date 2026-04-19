@@ -361,18 +361,28 @@ __global__ void kernel_update_vertex_pos(
 }
 
 /**
+ * Computes the degree of a vertex by walking around it
+ */
+__device__ uint32_t vertex_degree(Mesh::Vertex* vertices, Mesh::Halfedge* halfedges, uint32_t v_idx) {
+	uint32_t start_he = vertices[v_idx].halfedge_idx;
+	if (start_he == INVALID_IDX) return 0;
+	uint32_t he = start_he;
+	uint32_t deg = 0;
+	do {
+		deg++;
+		uint32_t tw = halfedges[he].twin_idx;
+		if (tw == INVALID_IDX) { deg++; break; } // boundary vertex
+		he = halfedges[tw].next_idx;
+		if (he == INVALID_IDX) break;
+	} while (he != start_he);
+	return deg;
+}
+
+/**
  * Populates a mask of size num Edges with the edges
  * which should be flipped
  */
-__global__ void kernel_get_flip_edges(
-	Mesh::Vertex* vertices,
-	Mesh::Edge* edges, 
-	uint32_t num_vertices,
-	uint32_t num_edges, 
-	int* op_mask
-) {
-	
-}
+__global__ void kernel_get_flip_edges(Mesh::Edge* edges, uint32_t num_edges, int* op_mask) { }
 __global__ void kernel_flip_edge(Mesh::Edge* edges, uint32_t num_edges, int color) { }
 
 
@@ -495,11 +505,11 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		int max_color;
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 		
-		kernel_get_flip_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, numEdges, edge_op_mask);
+		kernel_get_flip_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numEdges, edge_op_mask);
 		for (int c = 0; c <= max_color; c++) {
 			std::printf("Flipping edges of color %d\n", c);
 			// flips all edges with color c if flipping them increases regular-ness
-			kernel_flip_edge<<<blockDim, gridDim>>>(cudaDeviceEdges, numEdges, c);
+			kernel_flip_edge<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_color_mask, edge_op_mask, c);
 		}
 
 		/*
