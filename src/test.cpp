@@ -32,28 +32,27 @@ int test_split_edge()
 int test_collapse_edge()
 {
     CudaRemesher* remesher = new CudaRemesher();
-    // Triangular bipyramid (closed, no boundary).
-    // Two apexes far apart on z, equator ring squeezed close to origin
-    // so the 3 equator edges are MUCH shorter than the 6 apex edges.
+    // Triangular bipyramid (closed, no boundary), but asymmetric:
+    // v3 is placed almost on top of v2, so ONLY the v2-v3 equator edge is
+    // very short. After collapsing it once we get a valid tetrahedron.
+    // (Collapsing all 3 equator edges would degenerate the entire mesh.)
     Mesh mesh = Mesh::from_indexed_faces({
-        Vec3{ 0.0f,    0.0f,    1.0f},   // v0 top apex
-        Vec3{ 0.0f,    0.0f,   -1.0f},   // v1 bottom apex
-        Vec3{ 0.10f,   0.0f,    0.0f},   // v2 equator
-        Vec3{-0.05f,   0.0866f, 0.0f},   // v3 equator
-        Vec3{-0.05f,  -0.0866f, 0.0f}    // v4 equator
+        Vec3{ 0.0f,    0.0f,    1.0f},     // v0 top apex
+        Vec3{ 0.0f,    0.0f,   -1.0f},     // v1 bottom apex
+        Vec3{ 1.0f,    0.0f,    0.0f},     // v2 equator
+        Vec3{ 1.0001f, 0.0f,    0.0f},     // v3 equator -- almost identical to v2
+        Vec3{-0.5f,    0.866f,  0.0f}      // v4 equator
     }, {
-        // top half (CCW seen from +z apex)
         {0, 2, 3}, {0, 3, 4}, {0, 4, 2},
-        // bottom half (CCW seen from -z apex => opposite ring orientation)
         {1, 3, 2}, {1, 4, 3}, {1, 2, 4}
     });
     mesh.describe();
     remesher->setup(mesh);
-    // Equator edges ~0.173, apex edges ~1.005, avg ~0.73.
-    // collapse_factor=0.5 -> threshold ~0.36: equator edges collapse.
-    // split_factor=2.0    -> threshold ~1.46: nothing splits.
+    // Edge lengths: v2-v3 ~0.0001 (short), other equator edges ~1.73, apex edges ~1.41.
+    // avg ~1.33; collapse_factor=0.5 -> threshold ~0.66 -> only v2-v3 collapses.
+    // split_factor=3.0 -> threshold ~3.99 -> nothing splits.
     Isotropic_Remesh_Params params{
-        1, 2.0f, 0.5f, 1, 1.0f
+        1, 3.0f, 0.5f, 1, 1.0f
     };
     remesher->isotropic_remesh(params);
 
