@@ -169,6 +169,7 @@ __global__ void kernel_color_vertices(
 	}
 
 	uint32_t he = start_he;
+	int guard = 0;
 	do {
 		// he goes out from vertex idx, twin goes back, twin->next goes out from neighbor
 		uint32_t twin_he = halfedges[he].twin_idx;
@@ -198,6 +199,7 @@ __global__ void kernel_color_vertices(
 		// move to next outgoing halfedge around vertex
 		he = halfedges[twin_he].next_idx;
 		if (he == INVALID_IDX) break;
+		if (++guard > 1024) break;
 	} while (he != start_he);
 
 	if (is_local_max) {
@@ -240,6 +242,7 @@ __global__ void kernel_color_edges(
 	uint32_t start_he = vertices[v1].halfedge_idx;
 	if (start_he != INVALID_IDX && halfedges[start_he].vertex_idx != INVALID_IDX) {
 		uint32_t he = start_he;
+		int guard1 = 0;
 		do {
 			uint32_t neighbor_edge = halfedges[he].edge_idx;
 			if (neighbor_edge != idx && neighbor_edge != INVALID_IDX) {
@@ -257,6 +260,7 @@ __global__ void kernel_color_edges(
 			if (tw == INVALID_IDX) break;
 			he = halfedges[tw].next_idx;
 			if (he == INVALID_IDX) break;
+			if (++guard1 > 1024) break;
 		} while (he != start_he);
 	}
 
@@ -265,6 +269,7 @@ __global__ void kernel_color_edges(
 		start_he = vertices[v2].halfedge_idx;
 		if (start_he != INVALID_IDX && halfedges[start_he].vertex_idx != INVALID_IDX) {
 			uint32_t he = start_he;
+			int guard2 = 0;
 			do {
 				uint32_t neighbor_edge = halfedges[he].edge_idx;
 				if (neighbor_edge != idx && neighbor_edge != INVALID_IDX) {
@@ -282,6 +287,7 @@ __global__ void kernel_color_edges(
 				if (tw == INVALID_IDX) break;
 				he = halfedges[tw].next_idx;
 				if (he == INVALID_IDX) break;
+				if (++guard2 > 1024) break;
 			} while (he != start_he);
 		}
 	}
@@ -357,6 +363,7 @@ __global__ void kernel_smooth_vertex(
 	uint32_t curr_idx = h_idx;
 
 	uint32_t count = 0;
+	int sguard = 0;
 	do {
 		Mesh::Halfedge h = halfedges[curr_idx];
 
@@ -370,6 +377,7 @@ __global__ void kernel_smooth_vertex(
 
 		curr_idx = halfedges[tw].next_idx;
 		if (curr_idx == INVALID_IDX) break;
+		if (++sguard > 1024) break;
 	} while (curr_idx != h_idx);
 
 	if (count == 0) return;
@@ -411,14 +419,17 @@ __global__ void kernel_init_vertex_pos(
 __device__ uint32_t vertex_degree(Mesh::Vertex* vertices, Mesh::Halfedge* halfedges, uint32_t v_idx) {
 	uint32_t start_he = vertices[v_idx].halfedge_idx;
 	if (start_he == INVALID_IDX) return 0;
+	if (halfedges[start_he].vertex_idx == INVALID_IDX) return 0;
 	uint32_t he = start_he;
 	uint32_t deg = 0;
+	int dguard = 0;
 	do {
 		deg++;
 		uint32_t tw = halfedges[he].twin_idx;
 		if (tw == INVALID_IDX) { deg++; break; } // boundary vertex
 		he = halfedges[tw].next_idx;
 		if (he == INVALID_IDX) break;
+		if (++dguard > 1024) break;
 	} while (he != start_he);
 	return deg;
 }
@@ -656,14 +667,16 @@ __global__ void kernel_collapse_edge(
 	// Rewire all halfedges that pointed to C → now point to B
 	// Walk around C and redirect
 	uint32_t start_he = vertices[vC].halfedge_idx;
-	if (start_he != INVALID_IDX) {
+	if (start_he != INVALID_IDX && halfedges[start_he].vertex_idx == vC) {
 		uint32_t he = start_he;
+		int cguard = 0;
 		do {
 			halfedges[he].vertex_idx = vB;
 			uint32_t tw = halfedges[he].twin_idx;
 			if (tw == INVALID_IDX) break;
 			he = halfedges[tw].next_idx;
 			if (he == INVALID_IDX) break;
+			if (++cguard > 1024) break;
 		} while (he != start_he);
 	}
 
