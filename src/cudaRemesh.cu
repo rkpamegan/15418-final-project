@@ -642,15 +642,24 @@ __global__ void kernel_collapse_edge(
 	// hn and hp's twins become direct twins (removing face f0)
 	if (hn_twin != INVALID_IDX) halfedges[hn_twin].twin_idx = hp_twin;
 	if (hp_twin != INVALID_IDX) halfedges[hp_twin].twin_idx = hn_twin;
-	// Merge one edge: keep ehp, mark ehn as invalid
+	// Merge one edge: keep ehp, mark ehn as invalid.
+	// IMPORTANT: edges[ehp].halfedge_idx may still point to hp_idx (now invalid).
+	// Redirect it to a surviving halfedge of this edge.
 	if (hn_twin != INVALID_IDX) halfedges[hn_twin].edge_idx = ehp;
+	if (hn_twin != INVALID_IDX)      edges[ehp].halfedge_idx = hn_twin;
+	else if (hp_twin != INVALID_IDX) edges[ehp].halfedge_idx = hp_twin;
+	else                              edges[ehp].halfedge_idx = INVALID_IDX;
 	edges[ehn].halfedge_idx = INVALID_IDX;
 
 	// tn and tp's twins become direct twins (removing face f1)
 	if (tn_twin != INVALID_IDX) halfedges[tn_twin].twin_idx = tp_twin;
 	if (tp_twin != INVALID_IDX) halfedges[tp_twin].twin_idx = tn_twin;
-	// Merge one edge: keep etn, mark etp as invalid
+	// Merge one edge: keep etn, mark etp as invalid.
+	// edges[etn].halfedge_idx may still point to tn_idx (now invalid). Redirect.
 	if (tp_twin != INVALID_IDX) halfedges[tp_twin].edge_idx = etn;
+	if (tn_twin != INVALID_IDX)      edges[etn].halfedge_idx = tn_twin;
+	else if (tp_twin != INVALID_IDX) edges[etn].halfedge_idx = tp_twin;
+	else                              edges[etn].halfedge_idx = INVALID_IDX;
 	edges[etp].halfedge_idx = INVALID_IDX;
 
 	// Mark the collapsed edge as invalid
