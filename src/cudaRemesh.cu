@@ -18,6 +18,16 @@
 #include "cudaRemesh.h"
 #include "vec3.h"
 
+#define CUDA_CHECK(label) do { \
+	cudaDeviceSynchronize(); \
+	cudaError_t _e = cudaGetLastError(); \
+	if (_e != cudaSuccess) { \
+		std::printf("[CUDA ERROR @ %s] %s\n", label, cudaGetErrorString(_e)); \
+		std::fflush(stdout); \
+		std::abort(); \
+	} \
+} while(0)
+
 CudaRemesher::CudaRemesher() {
 	cudaDeviceVertices = NULL;
 	cudaDeviceHalfedges = NULL;
@@ -919,14 +929,16 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 		
 		kernel_get_flip_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_op_mask);
+		CUDA_CHECK("get_flip_edges");
 		for (int c = 0; c <= max_color; c++) {
 			std::printf("Flipping edges of color %d\n", c);
 			// flips all edges with color c if flipping them increases regular-ness
 			kernel_flip_edge<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_color_mask, edge_op_mask, c);
+			CUDA_CHECK("flip_edge");
 		}
 
 		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, edge_lengths, numEdges);
-		cudaDeviceSynchronize();
+		CUDA_CHECK("get_edge_lengths_1");
 
 		float avg_len = thrust::reduce(thrust::device, edge_lengths, edge_lengths + numEdges, 0.0f, thrust::plus<float>()) / std::max(1U, numEdges);
 		std::printf("average length is %f\n", avg_len);
@@ -943,7 +955,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 
 		// === SPLIT ===
 		kernel_get_split_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces, edge_lengths, numEdges, avg_len, params.split_factor, edge_op_mask);
-		cudaDeviceSynchronize();
+		CUDA_CHECK("get_split_edges");
 
 		// Compute prefix sum of op_mask to get per-edge offset
 		cudaMalloc(&split_offsets, sizeof(int) * numEdges);
@@ -1026,7 +1038,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		// === COLLAPSE ===
 		// Recompute edge lengths (split may have changed the mesh)
 		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, edge_lengths, numEdges);
-		cudaDeviceSynchronize();
+		CUDA_CHECK("get_edge_lengths_2");
 
 		avg_len = thrust::reduce(thrust::device, edge_lengths, edge_lengths + numEdges, 0.0f, thrust::plus<float>()) / std::max(1U, numEdges);
 		std::printf("average length after split is %f\n", avg_len);
@@ -1042,7 +1054,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		}
 
 		kernel_get_collapse_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces, edge_lengths, numEdges, avg_len, params.collapse_factor, edge_op_mask);
-		cudaDeviceSynchronize();
+		CUDA_CHECK("get_collapse_edges");
 
 		cuda_max_color = thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
@@ -1052,7 +1064,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			kernel_collapse_edge<<<gridDim, blockDim>>>(
 				cudaDeviceVertices, cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces,
 				edge_color_mask, edge_op_mask, numEdges, c);
-			cudaDeviceSynchronize();
+			CUDA_CHECK("collapse_edge");
 		}
 
 		gridDim = dim3((numVertices + blockDim.x - 1) / blockDim.x);
