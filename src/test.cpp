@@ -21,8 +21,10 @@ int test_split_edge()
     mesh.describe();
     remesher->setup(mesh);
     // collapse_factor = 0.1 keeps short bottom edges (~3) above threshold so only split fires.
+    // 5 outer iters: convergence — after the first iter the long edges are split,
+    // subsequent iters should reach a stable state with no further splits/collapses.
     Isotropic_Remesh_Params params{
-		1, 1.5f, 0.1f, 1, 1.0f
+		5, 1.5f, 0.1f, 1, 1.0f
 	};
     remesher->isotropic_remesh(params);
 
@@ -51,11 +53,42 @@ int test_collapse_edge()
     // Edge lengths: v2-v3 ~0.0001 (short), other equator edges ~1.73, apex edges ~1.41.
     // avg ~1.33; collapse_factor=0.5 -> threshold ~0.66 -> only v2-v3 collapses.
     // split_factor=3.0 -> threshold ~3.99 -> nothing splits.
+    // 5 outer iters: after the v2-v3 collapse the result is a valid tetrahedron;
+    // remaining iters should make no further changes (convergence).
     Isotropic_Remesh_Params params{
-        1, 3.0f, 0.5f, 1, 1.0f
+        5, 3.0f, 0.5f, 1, 1.0f
     };
     remesher->isotropic_remesh(params);
 
+    return 0;
+}
+
+int test_converge()
+{
+    // Closed tetrahedron with one stretched vertex AND one near-duplicate vertex,
+    // exercising both split and collapse over multiple outer iterations.
+    CudaRemesher* remesher = new CudaRemesher();
+    Mesh mesh = Mesh::from_indexed_faces({
+        Vec3{0.0f,    0.0f,    0.0f},
+        Vec3{3.0f,    0.0f,    0.0f},
+        Vec3{0.0001f, 0.0f,    0.0f},   // v2 nearly on top of v0 -> v0-v2 will collapse
+        Vec3{0.0f,    0.0f,   10.0f}    // v3 stretched -> v3-incident edges will split
+    }, {
+        {0, 1, 2},
+        {0, 3, 1},
+        {1, 3, 2},
+        {2, 3, 0}
+    });
+    mesh.describe();
+    remesher->setup(mesh);
+    Isotropic_Remesh_Params params{
+        5,      // num_iters: run multiple rounds and watch operations taper off
+        1.5f,   // split_factor
+        0.3f,   // collapse_factor
+        2,      // smoothing_iters per outer iter
+        0.5f    // smoothing_step
+    };
+    remesher->isotropic_remesh(params);
     return 0;
 }
 
