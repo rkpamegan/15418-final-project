@@ -1139,6 +1139,12 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			// uninitialized garbage copied back by update_vertex_pos.
 			kernel_init_vertex_pos<<<gridDim, blockDim>>>(cudaDeviceVertices, vertex_pos, numVertices);
 			CUDA_CHECK("init_vertex_pos");
+			// Zero vertex_normals: smooth_vertex reads vertex_normals[i] and
+			// uses it for tangent-plane projection. The buggy
+			// kernel_get_vertex_normals isn't called, so leaving it as raw
+			// cudaMalloc memory yields garbage normals → exploded positions.
+			// Zeroing reduces smoothing to plain centroid smoothing.
+			cudaMemset(vertex_normals, 0, sizeof(Vec3) * numVertices);
 			for (int c = 0; c <= max_color; c++) {
 				// smooth all vertices of each color
 				std::printf("Smoothing vertices of color %d\n", c);
