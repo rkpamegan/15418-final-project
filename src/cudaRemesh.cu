@@ -470,8 +470,15 @@ __global__ void kernel_get_flip_edges(
 	// h = B->D, twin = D->B
 	uint32_t vB = halfedges[h_idx].vertex_idx;
 	uint32_t vD = halfedges[t_idx].vertex_idx;
-	uint32_t vA = halfedges[halfedges[halfedges[h_idx].next_idx].next_idx].vertex_idx;
-	uint32_t vC = halfedges[halfedges[halfedges[t_idx].next_idx].next_idx].vertex_idx;
+	uint32_t hn = halfedges[h_idx].next_idx;
+	uint32_t tn = halfedges[t_idx].next_idx;
+	if (hn == INVALID_IDX || tn == INVALID_IDX) return;
+	uint32_t hnn = halfedges[hn].next_idx;
+	uint32_t tnn = halfedges[tn].next_idx;
+	if (hnn == INVALID_IDX || tnn == INVALID_IDX) return;
+	uint32_t vA = halfedges[hnn].vertex_idx;
+	uint32_t vC = halfedges[tnn].vertex_idx;
+	if (vA == INVALID_IDX || vC == INVALID_IDX || vB == INVALID_IDX || vD == INVALID_IDX) return;
 
 	int degA = vertex_degree(vertices, halfedges, vA);
 	int degB = vertex_degree(vertices, halfedges, vB);
