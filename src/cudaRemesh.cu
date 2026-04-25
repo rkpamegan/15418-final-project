@@ -81,6 +81,8 @@ void CudaRemesher::setup(Mesh &_mesh) {
 	numEdges = _mesh.edges.size();
 	numHalfedges = _mesh.halfedges.size();
 	numFaces = _mesh.faces.size();
+	std::printf("setup: numVertices=%u, numEdges=%u, numHalfedges=%u, numFaces=%u\n",
+		numVertices, numEdges, numHalfedges, numFaces);
 
 	cudaMalloc(&edge_lengths, sizeof(float) * numEdges);
 	cudaMalloc(&edge_color_mask, sizeof(int) * numEdges);
@@ -284,7 +286,7 @@ __global__ void kernel_get_vertex_normals(
 	uint32_t num_halfedges
 ) {
 	int index = blockDim.x * blockIdx.x + threadIdx.x;
-	if (index > num_vertices) return;
+	if (index >= num_vertices) return;
 
 	Vec3 n = Vec3(0.0f, 0.0f, 0.0f);
 	Vec3 pi = vertices[index].position;
@@ -319,7 +321,7 @@ __global__ void kernel_smooth_vertex(
 	int color
 ) {
 	int index = blockDim.x * blockIdx.x + threadIdx.x;
-	if (index > num_vertices) return;
+	if (index >= num_vertices) return;
 	if (vertex_color_mask[index] != color) return;
 
 	Mesh::Vertex v = vertices[index];
@@ -355,7 +357,7 @@ __global__ void kernel_update_vertex_pos(
 	uint32_t num_vertices
 ) {
 	int index = blockDim.x * blockIdx.x + threadIdx.x;
-	if (index > num_vertices) return;
+	if (index >= num_vertices) return;
 
 	vertices[index].position = vertex_pos[index];
 }
@@ -500,7 +502,7 @@ __global__ void kernel_get_edge_lengths(
 	uint32_t num_edges)
 {
 	int index = blockDim.x * blockIdx.x + threadIdx.x;
-	if (index > num_edges) return;
+	if (index >= num_edges) return;
 
 	Mesh::Edge e = edges[index];
 	Mesh::Halfedge h = halfedges[e.halfedge_idx];
@@ -523,7 +525,7 @@ __global__ void kernel_get_edge_lengths(
  */
 __global__ void kernel_get_collapse_edges(float* lengths, uint32_t num_edges, float avg_len, float collapse_factor, int* op_mask) {
 	int index = blockDim.x * blockIdx.x + threadIdx.x;
-	if (index > num_edges) return;
+	if (index >= num_edges) return;
 	
 	op_mask[index] = lengths[index] < avg_len * collapse_factor;
 }
@@ -650,7 +652,7 @@ __global__ void kernel_collapse_edge(
  */
 __global__ void kernel_get_split_edges(float* lengths, uint32_t num_edges, float avg_len, float split_factor, int* op_mask) {
 	int index = blockDim.x * blockIdx.x + threadIdx.x;
-	if (index > num_edges) return;
+	if (index >= num_edges) return;
 	std::printf("edge %u: length = %f, cmp = %f\n", index, lengths[index], avg_len * split_factor);
 	op_mask[index] = lengths[index] > avg_len * split_factor;
 	if (op_mask[index]) std::printf("edge %u should be split\n", index);
