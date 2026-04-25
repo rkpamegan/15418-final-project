@@ -231,10 +231,14 @@ __global__ void kernel_color_edges(
 	uint32_t v1 = halfedges[h_idx].vertex_idx;
 	uint32_t twin_idx = halfedges[h_idx].twin_idx;
 	uint32_t v2 = (twin_idx != INVALID_IDX) ? halfedges[twin_idx].vertex_idx : INVALID_IDX;
+	if (v1 == INVALID_IDX) {
+		color_mask[idx] = 0;
+		return;
+	}
 
 	// Walk around v1 to find all incident edges (adjacent to this edge)
 	uint32_t start_he = vertices[v1].halfedge_idx;
-	if (start_he != INVALID_IDX) {
+	if (start_he != INVALID_IDX && halfedges[start_he].vertex_idx != INVALID_IDX) {
 		uint32_t he = start_he;
 		do {
 			uint32_t neighbor_edge = halfedges[he].edge_idx;
@@ -259,7 +263,7 @@ __global__ void kernel_color_edges(
 	// Walk around v2 to find all incident edges
 	if (is_local_max && v2 != INVALID_IDX) {
 		start_he = vertices[v2].halfedge_idx;
-		if (start_he != INVALID_IDX) {
+		if (start_he != INVALID_IDX && halfedges[start_he].vertex_idx != INVALID_IDX) {
 			uint32_t he = start_he;
 			do {
 				uint32_t neighbor_edge = halfedges[he].edge_idx;
