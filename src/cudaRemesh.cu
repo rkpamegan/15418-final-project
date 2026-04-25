@@ -667,9 +667,11 @@ __global__ void kernel_collapse_edge(
 	faces[f1].halfedge_idx = INVALID_IDX;
 
 	// Update vertex halfedge pointers for A, B, D
-	vertices[vA].halfedge_idx = (hp_twin != INVALID_IDX) ? hp_twin : hn_twin;
+	// Convention: vertex.halfedge must be an outgoing halfedge (halfedges[h].vertex_idx == that vertex).
+	// hn_twin source = A; hp_twin source = B; tn_twin source = D; tp_twin source = C (rewritten to B).
+	vertices[vA].halfedge_idx = (hn_twin != INVALID_IDX) ? hn_twin : hp_twin;
 	vertices[vD].halfedge_idx = (tn_twin != INVALID_IDX) ? tn_twin : tp_twin;
-	vertices[vB].halfedge_idx = (tn_twin != INVALID_IDX) ? tn_twin : hp_twin;
+	vertices[vB].halfedge_idx = (hp_twin != INVALID_IDX) ? hp_twin : tp_twin;
 }
 
 /**
