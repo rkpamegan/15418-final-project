@@ -1040,6 +1040,19 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			cudaMalloc(&edge_priorities, sizeof(int) * numEdges);
 			cudaMemcpy(edge_priorities, h_ep.data(), sizeof(int) * numEdges, cudaMemcpyHostToDevice);
 
+			// Reallocate vertex-sized arrays for new count
+			cudaFree(vertex_color_mask);
+			cudaFree(vertex_pos);
+			cudaFree(vertex_normals);
+			cudaFree(vertex_priorities);
+			cudaMalloc(&vertex_color_mask, sizeof(int) * numVertices);
+			cudaMalloc(&vertex_pos, sizeof(Vec3) * numVertices);
+			cudaMalloc(&vertex_normals, sizeof(Vec3) * numVertices);
+			std::vector<int> h_vp(numVertices);
+			for (uint32_t i = 0; i < numVertices; i++) h_vp[i] = rand();
+			cudaMalloc(&vertex_priorities, sizeof(int) * numVertices);
+			cudaMemcpy(vertex_priorities, h_vp.data(), sizeof(int) * numVertices, cudaMemcpyHostToDevice);
+
 			// Update gridDim for new edge count
 			gridDim = dim3((numEdges + blockDim.x - 1) / blockDim.x);
 		}
