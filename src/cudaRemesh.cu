@@ -341,19 +341,24 @@ __global__ void kernel_smooth_vertex(
 	Vec3 center;
 
 	uint32_t h_idx = v.halfedge_idx;
+	if (h_idx == INVALID_IDX) return; // collapsed/isolated vertex — skip
 	uint32_t curr_idx = h_idx;
 
 	uint32_t count = 0;
 	do {
 		Mesh::Halfedge h = halfedges[curr_idx];
 
-		Mesh::Vertex neighbor = vertices[halfedges[h.twin_idx].vertex_idx];
+		uint32_t tw = h.twin_idx;
+		if (tw == INVALID_IDX) break;
+		Mesh::Vertex neighbor = vertices[halfedges[tw].vertex_idx];
 		center += neighbor.position;
 		count++;
 
-		curr_idx = halfedges[h.twin_idx].next_idx;
+		curr_idx = halfedges[tw].next_idx;
+		if (curr_idx == INVALID_IDX) break;
 	} while (curr_idx != h_idx);
-	
+
+	if (count == 0) return;
 	center /= count;
 
 	center = v.position + smoothing_factor * (center - v.position);
