@@ -385,7 +385,7 @@ __device__ uint32_t vertex_degree(Mesh::Vertex* vertices, Mesh::Halfedge* halfed
  * which should be flipped
  */
 __global__ void kernel_get_flip_edges(
-	Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Vertex* vertices,
+	Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Vertex* vertices, Mesh::Face* faces,
 	uint32_t num_edges, int* op_mask)
 {
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -398,6 +398,10 @@ __global__ void kernel_get_flip_edges(
 
 	uint32_t t_idx = halfedges[h_idx].twin_idx;
 	if (t_idx == INVALID_IDX) return; // boundary edge, can't flip
+
+	// Skip edges that touch a boundary face
+	if (faces[halfedges[h_idx].face_idx].boundary) return;
+	if (faces[halfedges[t_idx].face_idx].boundary) return;
 
 	// 4 vertices of the diamond:
 	//       B
@@ -523,10 +527,20 @@ __global__ void kernel_get_edge_lengths(
  * Populates a mask of size numEdges with the edges
  * which should be collapsed
  */
-__global__ void kernel_get_collapse_edges(float* lengths, uint32_t num_edges, float avg_len, float collapse_factor, int* op_mask) {
+__global__ void kernel_get_collapse_edges(
+	Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Face* faces,
+	float* lengths, uint32_t num_edges, float avg_len, float collapse_factor, int* op_mask) {
 	int index = blockDim.x * blockIdx.x + threadIdx.x;
 	if (index >= num_edges) return;
-	
+	op_mask[index] = 0;
+
+	uint32_t h_idx = edges[index].halfedge_idx;
+	if (h_idx == INVALID_IDX) return;
+	uint32_t t_idx = halfedges[h_idx].twin_idx;
+	if (t_idx == INVALID_IDX) return; // boundary edge
+	if (faces[halfedges[h_idx].face_idx].boundary) return;
+	if (faces[halfedges[t_idx].face_idx].boundary) return;
+
 	op_mask[index] = lengths[index] < avg_len * collapse_factor;
 }
 /**
@@ -650,9 +664,20 @@ __global__ void kernel_collapse_edge(
  * Populates a mask of size numEdges with the edges
  * which should be split
  */
-__global__ void kernel_get_split_edges(float* lengths, uint32_t num_edges, float avg_len, float split_factor, int* op_mask) {
+__global__ void kernel_get_split_edges(
+	Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Face* faces,
+	float* lengths, uint32_t num_edges, float avg_len, float split_factor, int* op_mask) {
 	int index = blockDim.x * blockIdx.x + threadIdx.x;
 	if (index >= num_edges) return;
+	op_mask[index] = 0;
+
+	uint32_t h_idx = edges[index].halfedge_idx;
+	if (h_idx == INVALID_IDX) return;
+	uint32_t t_idx = halfedges[h_idx].twin_idx;
+	if (t_idx == INVALID_IDX) return; // boundary edge, can't split here
+	if (faces[halfedges[h_idx].face_idx].boundary) return;
+	if (faces[halfedges[t_idx].face_idx].boundary) return;
+
 	std::printf("edge %u: length = %f, cmp = %f\n", index, lengths[index], avg_len * split_factor);
 	op_mask[index] = lengths[index] > avg_len * split_factor;
 	if (op_mask[index]) std::printf("edge %u should be split\n", index);
@@ -893,7 +918,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		int max_color;
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 		
-		kernel_get_flip_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numEdges, edge_op_mask);
+		kernel_get_flip_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_op_mask);
 		for (int c = 0; c <= max_color; c++) {
 			std::printf("Flipping edges of color %d\n", c);
 			// flips all edges with color c if flipping them increases regular-ness
@@ -917,7 +942,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		}
 
 		// === SPLIT ===
-		kernel_get_split_edges<<<gridDim, blockDim>>>(edge_lengths, numEdges, avg_len, params.split_factor, edge_op_mask);
+		kernel_get_split_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces, edge_lengths, numEdges, avg_len, params.split_factor, edge_op_mask);
 		cudaDeviceSynchronize();
 
 		// Compute prefix sum of op_mask to get per-edge offset
@@ -1016,7 +1041,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 
-		kernel_get_collapse_edges<<<gridDim, blockDim>>>(edge_lengths, numEdges, avg_len, params.collapse_factor, edge_op_mask);
+		kernel_get_collapse_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces, edge_lengths, numEdges, avg_len, params.collapse_factor, edge_op_mask);
 		cudaDeviceSynchronize();
 
 		cuda_max_color = thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
