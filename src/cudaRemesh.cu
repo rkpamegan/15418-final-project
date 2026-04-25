@@ -877,7 +877,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		blockDim = dim3(256);
 		gridDim = dim3((numEdges + blockDim.x - 1 ) / blockDim.x);
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
-		h_done = false;
+		bool h_done = false;
 		while (!h_done) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
@@ -1031,7 +1031,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		gridDim = dim3((numVertices + blockDim.x - 1) / blockDim.x);
 		// Color vertices using Jones-Plassmann algorithm
 		cudaMemset(vertex_color_mask, -1, sizeof(int) * numVertices); // reset all to -1 (uncolored)
-		bool h_done = false;
+		h_done = false;
 		while (!h_done) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
