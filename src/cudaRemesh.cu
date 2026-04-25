@@ -348,6 +348,8 @@ __global__ void kernel_smooth_vertex(
 
 	uint32_t h_idx = v.halfedge_idx;
 	if (h_idx == INVALID_IDX) return; // collapsed/isolated vertex — skip
+	// stale start_he: vertex points to halfedge that was invalidated by prior collapse
+	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return;
 	uint32_t curr_idx = h_idx;
 
 	uint32_t count = 0;
@@ -356,7 +358,9 @@ __global__ void kernel_smooth_vertex(
 
 		uint32_t tw = h.twin_idx;
 		if (tw == INVALID_IDX) break;
-		Mesh::Vertex neighbor = vertices[halfedges[tw].vertex_idx];
+		uint32_t nb_idx = halfedges[tw].vertex_idx;
+		if (nb_idx == INVALID_IDX) break;
+		Mesh::Vertex neighbor = vertices[nb_idx];
 		center += neighbor.position;
 		count++;
 
