@@ -379,6 +379,18 @@ __global__ void kernel_update_vertex_pos(
 	vertices[index].position = vertex_pos[index];
 }
 
+// Initialize vertex_pos[i] with current vertex positions so that early-returning
+// smoothing kernels don't leave uninitialized memory for update_vertex_pos to copy.
+__global__ void kernel_init_vertex_pos(
+	Mesh::Vertex* vertices,
+	Vec3* vertex_pos,
+	uint32_t num_vertices
+) {
+	int index = blockDim.x * blockIdx.x + threadIdx.x;
+	if (index >= num_vertices) return;
+	vertex_pos[index] = vertices[index].position;
+}
+
 /**
  * Computes the degree of a vertex by walking around it
  */
@@ -1122,6 +1134,11 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 		for (int i = 0; i < params.smoothing_iters; i++) {
 			std::printf("iteration %d of vertex smoothing\n", i);
+			// Initialize vertex_pos with current positions so vertices that
+			// don't get smoothed (invalid, isolated, count==0) don't get
+			// uninitialized garbage copied back by update_vertex_pos.
+			kernel_init_vertex_pos<<<gridDim, blockDim>>>(cudaDeviceVertices, vertex_pos, numVertices);
+			CUDA_CHECK("init_vertex_pos");
 			for (int c = 0; c <= max_color; c++) {
 				// smooth all vertices of each color
 				std::printf("Smoothing vertices of color %d\n", c);
