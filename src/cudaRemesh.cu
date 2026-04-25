@@ -526,8 +526,11 @@ __global__ void kernel_get_edge_lengths(
 	if (index >= num_edges) return;
 
 	Mesh::Edge e = edges[index];
+	if (e.halfedge_idx == INVALID_IDX) { lengths[index] = 0.0f; return; }
 	Mesh::Halfedge h = halfedges[e.halfedge_idx];
+	if (h.twin_idx == INVALID_IDX || h.vertex_idx == INVALID_IDX) { lengths[index] = 0.0f; return; }
 	Mesh::Halfedge h_twin = halfedges[h.twin_idx];
+	if (h_twin.vertex_idx == INVALID_IDX) { lengths[index] = 0.0f; return; }
 	Mesh::Vertex v1 = vertices[h.vertex_idx];
 	Mesh::Vertex v2 = vertices[h_twin.vertex_idx];
 
