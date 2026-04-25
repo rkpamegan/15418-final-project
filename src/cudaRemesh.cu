@@ -650,15 +650,26 @@ __global__ void kernel_collapse_edge(
 
 	// 6 halfedges of the two triangles
 	uint32_t hn_idx = halfedges[h_idx].next_idx;   // C→A
+	if (hn_idx == INVALID_IDX) return;
 	uint32_t hp_idx = halfedges[hn_idx].next_idx;   // A→B
+	if (hp_idx == INVALID_IDX) return;
 	uint32_t tn_idx = halfedges[t_idx].next_idx;    // B→D
+	if (tn_idx == INVALID_IDX) return;
 	uint32_t tp_idx = halfedges[tn_idx].next_idx;   // D→C
+	if (tp_idx == INVALID_IDX) return;
+	// If any of these inner halfedges was invalidated by a prior collapse this kernel,
+	// our pre-collapse view is stale; skip to avoid corrupting connectivity further.
+	if (halfedges[hn_idx].vertex_idx == INVALID_IDX) return;
+	if (halfedges[hp_idx].vertex_idx == INVALID_IDX) return;
+	if (halfedges[tn_idx].vertex_idx == INVALID_IDX) return;
+	if (halfedges[tp_idx].vertex_idx == INVALID_IDX) return;
 
 	// 4 vertices
 	uint32_t vB = halfedges[h_idx].vertex_idx;
 	uint32_t vC = halfedges[t_idx].vertex_idx;
 	uint32_t vA = halfedges[hp_idx].vertex_idx;
 	uint32_t vD = halfedges[tp_idx].vertex_idx;
+	if (vA == INVALID_IDX || vB == INVALID_IDX || vC == INVALID_IDX || vD == INVALID_IDX) return;
 
 	// 2 faces to remove
 	uint32_t f0 = halfedges[h_idx].face_idx;
