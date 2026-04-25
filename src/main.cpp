@@ -26,7 +26,7 @@ int main() {
 	// 	1, 1.5f, 0.5f, 1, 1.0f
 	// };
 	// remesher->isotropic_remesh(params);
-	test_converge();
+	test_split_edge();
     return 0;
 
 }
