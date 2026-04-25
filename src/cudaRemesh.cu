@@ -449,9 +449,11 @@ __global__ void kernel_get_flip_edges(
 
 	uint32_t h_idx = edges[idx].halfedge_idx;
 	if (h_idx == INVALID_IDX) return;
+	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return; // halfedge was invalidated by prior collapse
 
 	uint32_t t_idx = halfedges[h_idx].twin_idx;
 	if (t_idx == INVALID_IDX) return; // boundary edge, can't flip
+	if (halfedges[t_idx].vertex_idx == INVALID_IDX) return;
 
 	// Skip edges that touch a boundary face
 	if (faces[halfedges[h_idx].face_idx].boundary) return;
@@ -494,8 +496,10 @@ __global__ void kernel_flip_edge(
 
 	uint32_t h_idx = edges[idx].halfedge_idx;
 	if (h_idx == INVALID_IDX) return;
+	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return;
 	uint32_t t_idx = halfedges[h_idx].twin_idx;
 	if (t_idx == INVALID_IDX) return; // boundary edge
+	if (halfedges[t_idx].vertex_idx == INVALID_IDX) return;
 
 	// Gather the 6 halfedges
 	uint32_t hn_idx = halfedges[h_idx].next_idx;   // h_next
@@ -593,8 +597,10 @@ __global__ void kernel_get_collapse_edges(
 
 	uint32_t h_idx = edges[index].halfedge_idx;
 	if (h_idx == INVALID_IDX) return;
+	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return;
 	uint32_t t_idx = halfedges[h_idx].twin_idx;
 	if (t_idx == INVALID_IDX) return; // boundary edge
+	if (halfedges[t_idx].vertex_idx == INVALID_IDX) return;
 	if (faces[halfedges[h_idx].face_idx].boundary) return;
 	if (faces[halfedges[t_idx].face_idx].boundary) return;
 
@@ -630,8 +636,10 @@ __global__ void kernel_collapse_edge(
 
 	uint32_t h_idx = edges[idx].halfedge_idx;
 	if (h_idx == INVALID_IDX) return;
+	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return;
 	uint32_t t_idx = halfedges[h_idx].twin_idx;
 	if (t_idx == INVALID_IDX) return; // boundary edge
+	if (halfedges[t_idx].vertex_idx == INVALID_IDX) return;
 
 	// 6 halfedges of the two triangles
 	uint32_t hn_idx = halfedges[h_idx].next_idx;   // C→A
@@ -743,8 +751,10 @@ __global__ void kernel_get_split_edges(
 
 	uint32_t h_idx = edges[index].halfedge_idx;
 	if (h_idx == INVALID_IDX) return;
+	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return;
 	uint32_t t_idx = halfedges[h_idx].twin_idx;
 	if (t_idx == INVALID_IDX) return; // boundary edge, can't split here
+	if (halfedges[t_idx].vertex_idx == INVALID_IDX) return;
 	if (faces[halfedges[h_idx].face_idx].boundary) return;
 	if (faces[halfedges[t_idx].face_idx].boundary) return;
 
@@ -788,8 +798,10 @@ __global__ void kernel_split_edge(
 
 	uint32_t h_idx = edges[idx].halfedge_idx;
 	if (h_idx == INVALID_IDX) return;
+	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return;
 	uint32_t t_idx = halfedges[h_idx].twin_idx;
 	if (t_idx == INVALID_IDX) return; // skip boundary edges
+	if (halfedges[t_idx].vertex_idx == INVALID_IDX) return;
 
 	// Original 6 halfedges:
 	// Face f0: h(B→C), hn(C→A), hp(A→B)
