@@ -19,12 +19,14 @@
 #include "vec3.h"
 
 #define CUDA_CHECK(label) do { \
-	cudaDeviceSynchronize(); \
-	cudaError_t _e = cudaGetLastError(); \
-	if (_e != cudaSuccess) { \
-		std::printf("[CUDA ERROR @ %s] %s\n", label, cudaGetErrorString(_e)); \
+	cudaError_t _s = cudaDeviceSynchronize(); \
+	cudaError_t _l = cudaGetLastError(); \
+	if (_s != cudaSuccess || _l != cudaSuccess) { \
+		std::printf("[CUDA ERROR @ %s] sync=%s last=%s\n", label, cudaGetErrorString(_s), cudaGetErrorString(_l)); \
 		std::fflush(stdout); \
 		std::abort(); \
+	} else { \
+		std::printf("[ok @ %s]\n", label); std::fflush(stdout); \
 	} \
 } while(0)
 
@@ -950,6 +952,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
 			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
+			CUDA_CHECK("color_edges_pre_split");
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 
@@ -960,6 +963,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		// Compute prefix sum of op_mask to get per-edge offset
 		cudaMalloc(&split_offsets, sizeof(int) * numEdges);
 		thrust::exclusive_scan(thrust::device, edge_op_mask, edge_op_mask + numEdges, split_offsets);
+		CUDA_CHECK("exclusive_scan_split");
 
 		// Total number of splits = last offset + last op_mask value
 		int last_offset, last_mask;
@@ -1041,6 +1045,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		CUDA_CHECK("get_edge_lengths_2");
 
 		avg_len = thrust::reduce(thrust::device, edge_lengths, edge_lengths + numEdges, 0.0f, thrust::plus<float>()) / std::max(1U, numEdges);
+		CUDA_CHECK("reduce_avg_len_2");
 		std::printf("average length after split is %f\n", avg_len);
 
 		// Recolor edges (split changed connectivity)
