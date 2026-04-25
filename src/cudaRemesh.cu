@@ -162,6 +162,11 @@ __global__ void kernel_color_vertices(
 		color_mask[idx] = 0; // isolated vertex
 		return;
 	}
+	// If our start_he was invalidated by a previous collapse, treat as isolated.
+	if (halfedges[start_he].vertex_idx == INVALID_IDX) {
+		color_mask[idx] = 0;
+		return;
+	}
 
 	uint32_t he = start_he;
 	do {
@@ -170,6 +175,7 @@ __global__ void kernel_color_vertices(
 		if (twin_he == INVALID_IDX) break;
 
 		uint32_t neighbor = halfedges[twin_he].vertex_idx;
+		if (neighbor == INVALID_IDX) break;
 
 		if (color_mask[neighbor] == -1) {
 			// neighbor is uncolored — check priority
