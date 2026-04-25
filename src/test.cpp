@@ -5,16 +5,24 @@
 int test_split_edge()
 {
     CudaRemesher* remesher = new CudaRemesher();
+    // Closed tetrahedron with one vertex (v3) stretched far away,
+    // so the 3 edges incident to v3 are flagged for splitting.
     Mesh mesh = Mesh::from_indexed_faces({
-        Vec3{0.0f, 1.0f, 0.0f}, Vec3{1.0f, 1.0f, 0.0f},
-        Vec3{0.0f, 0.0f, 0.0f}, Vec3{1.0f, 0.0f, 0.0f}, Vec3{20.0f, 0.0f, 0.0f}
+        Vec3{0.0f, 0.0f, 0.0f},
+        Vec3{3.0f, 0.0f, 0.0f},
+        Vec3{0.0f, 3.0f, 0.0f},
+        Vec3{0.0f, 0.0f, 30.0f}
     }, {
-        {0, 2, 3, 1}, {1, 3, 4}
+        {0, 2, 1}, // bottom (winding outward, -z normal)
+        {0, 1, 3},
+        {1, 2, 3},
+        {2, 0, 3}
     });
     mesh.describe();
     remesher->setup(mesh);
+    // collapse_factor = 0.1 keeps short bottom edges (~3) above threshold so only split fires.
     Isotropic_Remesh_Params params{
-		1, 1.5f, 0.5f, 1, 1.0f
+		1, 1.5f, 0.1f, 1, 1.0f
 	};
     remesher->isotropic_remesh(params);
 
