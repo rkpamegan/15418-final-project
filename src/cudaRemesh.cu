@@ -1080,10 +1080,12 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
 			kernel_color_vertices<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceHalfedges, numVertices, vertex_color_mask, vertex_priorities, d_coloring_done);
+			CUDA_CHECK("color_vertices");
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 
 		cuda_max_color = thrust::max_element(thrust::device, vertex_color_mask, vertex_color_mask + numVertices);
+		CUDA_CHECK("max_element_v");
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 		for (int i = 0; i < params.smoothing_iters; i++) {
 			std::printf("iteration %d of vertex smoothing\n", i);
@@ -1093,11 +1095,11 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 				kernel_smooth_vertex<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceEdges,
 					cudaDeviceHalfedges, cudaDeviceFaces, vertex_color_mask, vertex_normals, vertex_pos,
 					numVertices, numEdges, numHalfedges, numFaces, params.smoothing_step, c);
-					cudaDeviceSynchronize();
+				CUDA_CHECK("smooth_vertex");
 			}
 			// update vertex positions
 			kernel_update_vertex_pos<<<gridDim, blockDim>>>(cudaDeviceVertices, vertex_pos, numVertices);
-			cudaDeviceSynchronize();
+			CUDA_CHECK("update_vertex_pos");
 		}
 	}
 }
