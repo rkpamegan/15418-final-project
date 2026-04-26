@@ -302,8 +302,12 @@ __global__ void kernel_color_edges(
 }
 
 /**
- * Computes the normal of every vertex in the mesh based on its neighbors
- * Original code provided by 15-362 course staff
+ * Computes the normal of every vertex in the mesh based on its neighbors.
+ * For each outgoing halfedge h from the vertex, the face on h's left is the
+ * triangle (pi, pk, pj) where pk = halfedges[h.next].vertex (target of h)
+ * and pj = halfedges[h.next.next].vertex (third corner). The (un-normalized)
+ * face normal is cross(pk-pi, pj-pi); summing over all incident faces and
+ * normalizing yields the area-weighted vertex normal.
  */
 __global__ void kernel_get_vertex_normals(
 	Mesh::Vertex* vertices,
@@ -319,18 +323,36 @@ __global__ void kernel_get_vertex_normals(
 	Vec3 n = Vec3(0.0f, 0.0f, 0.0f);
 	Vec3 pi = vertices[index].position;
 	uint32_t h_idx = vertices[index].halfedge_idx;
-	uint32_t curr_idx = h_idx;
+	if (h_idx == INVALID_IDX) { vertex_normals[index] = Vec3(0.0f, 0.0f, 0.0f); return; }
+	if (halfedges[h_idx].vertex_idx == INVALID_IDX) { vertex_normals[index] = Vec3(0.0f, 0.0f, 0.0f); return; }
 
-	//walk clockwise around the vertex:
+	uint32_t curr_idx = h_idx;
+	int guard = 0;
 	do {
 		Mesh::Halfedge h = halfedges[curr_idx];
-		Vec3 pk = vertices[halfedges[h.next_idx].vertex_idx].position;
-		h = halfedges[halfedges[h.twin_idx].next_idx];
-		Vec3 pj = vertices[halfedges[h.next_idx].vertex_idx].position;
-		//pi,pk,pj is a ccw-oriented triangle covering the area of h->face incident on the vertex
-		if (!faces[h.face_idx].boundary) n += cross(pj - pi, pk - pi);
+		uint32_t hn = h.next_idx;
+		if (hn == INVALID_IDX) break;
+		uint32_t hnn = halfedges[hn].next_idx;
+		if (hnn == INVALID_IDX) break;
+		uint32_t pk_v = halfedges[hn].vertex_idx;
+		uint32_t pj_v = halfedges[hnn].vertex_idx;
+		if (pk_v != INVALID_IDX && pj_v != INVALID_IDX && !faces[h.face_idx].boundary) {
+			Vec3 pk = vertices[pk_v].position;
+			Vec3 pj = vertices[pj_v].position;
+			n += cross(pk - pi, pj - pi);
+		}
+		// advance to next outgoing halfedge around the vertex
+		uint32_t tw = h.twin_idx;
+		if (tw == INVALID_IDX) break;
+		curr_idx = halfedges[tw].next_idx;
+		if (curr_idx == INVALID_IDX) break;
+		if (++guard > 1024) break;
 	} while (curr_idx != h_idx);
-	vertex_normals[index] = n.unit();
+
+	float len = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
+	if (len > 1e-12f) n = n * (1.0f / len);
+	else n = Vec3(0.0f, 0.0f, 0.0f);
+	vertex_normals[index] = n;
 }
 
 __global__ void kernel_smooth_vertex(
@@ -1196,12 +1218,12 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			// uninitialized garbage copied back by update_vertex_pos.
 			kernel_init_vertex_pos<<<gridDim, blockDim>>>(cudaDeviceVertices, vertex_pos, numVertices);
 			CUDA_CHECK("init_vertex_pos");
-			// Zero vertex_normals: smooth_vertex reads vertex_normals[i] and
-			// uses it for tangent-plane projection. The buggy
-			// kernel_get_vertex_normals isn't called, so leaving it as raw
-			// cudaMalloc memory yields garbage normals → exploded positions.
-			// Zeroing reduces smoothing to plain centroid smoothing.
-			cudaMemset(vertex_normals, 0, sizeof(Vec3) * numVertices);
+			// Compute per-vertex area-weighted normals for tangent-plane
+			// projection in smooth_vertex. Must be recomputed each smoothing
+			// iter because vertex positions and connectivity change.
+			kernel_get_vertex_normals<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceHalfedges,
+				cudaDeviceFaces, vertex_normals, numVertices, numHalfedges);
+			CUDA_CHECK("get_vertex_normals");
 			for (int c = 0; c <= max_color; c++) {
 				// smooth all vertices of each color
 				std::printf("Smoothing vertices of color %d\n", c);
