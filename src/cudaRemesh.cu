@@ -1,9 +1,3 @@
-/**
- * TODO: Find workaround for emplace_x function calls, as they can cause data races
- * TODO: Graph coloring algorithm for vertices/edges
- * TODO: Function for copying mesh elements back to original mesh
- */
-
 #include <stdint.h>
 
 #include <cuda.h>
@@ -81,20 +75,16 @@ void CudaRemesher::setup(Mesh &_mesh) {
 	cudaMalloc(&cudaDeviceEdges, sizeof(Mesh::Edge) * _mesh.edges.size());
 	cudaMalloc(&cudaDeviceHalfedges, sizeof(Mesh::Halfedge) * _mesh.halfedges.size());
 	cudaMalloc(&cudaDeviceFaces, sizeof(Mesh::Face) * _mesh.faces.size());
-	std::printf("malloc'd elements\n");
 
 	cudaMemcpy(cudaDeviceVertices, _mesh.vertices.data(), sizeof(Mesh::Vertex) * _mesh.vertices.size(), cudaMemcpyHostToDevice);
 	cudaMemcpy(cudaDeviceEdges, _mesh.edges.data(), sizeof(Mesh::Edge) * _mesh.edges.size(), cudaMemcpyHostToDevice);
 	cudaMemcpy(cudaDeviceHalfedges, _mesh.halfedges.data(), sizeof(Mesh::Halfedge) * _mesh.halfedges.size(), cudaMemcpyHostToDevice);
 	cudaMemcpy(cudaDeviceFaces, _mesh.faces.data(), sizeof(Mesh::Face) * _mesh.faces.size(), cudaMemcpyHostToDevice);
-	std::printf("memcpy elements\n");
 
 	numVertices = _mesh.vertices.size();
 	numEdges = _mesh.edges.size();
 	numHalfedges = _mesh.halfedges.size();
 	numFaces = _mesh.faces.size();
-	std::printf("setup: numVertices=%u, numEdges=%u, numHalfedges=%u, numFaces=%u\n",
-		numVertices, numEdges, numHalfedges, numFaces);
 
 	cudaMalloc(&edge_lengths, sizeof(float) * numEdges);
 	cudaMalloc(&edge_color_mask, sizeof(int) * numEdges);
@@ -102,7 +92,6 @@ void CudaRemesher::setup(Mesh &_mesh) {
 	cudaMalloc(&vertex_color_mask, sizeof(int) * numVertices);
 	cudaMalloc(&vertex_pos, sizeof(Vec3) * numVertices);
 	cudaMalloc(&vertex_normals, sizeof(Vec3) * numVertices);
-	std::printf("malloc'd masks\n");
 
 	// Generate random priorities for graph coloring
 	std::vector<int> h_priorities(numVertices);
@@ -121,6 +110,12 @@ void CudaRemesher::setup(Mesh &_mesh) {
 	cudaMemcpy(edge_priorities, h_edge_priorities.data(), sizeof(int) * numEdges, cudaMemcpyHostToDevice);
 
 	cudaMalloc(&d_coloring_done, sizeof(bool));
+
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) printf("error copying data: %s\n", cudaGetErrorString(err));
+
+	std::printf("setup: numVertices=%u, numEdges=%u, numHalfedges=%u, numFaces=%u\n",
+		numVertices, numEdges, numHalfedges, numFaces);
 }
 
 // Updates mesh fields to the remeshed values
@@ -144,9 +139,13 @@ void CudaRemesher::update_mesh() {
  * 	It picks the smallest color not used by any already-colored neighbor.
  */ 
 __global__ void kernel_color_vertices(
-	Mesh::Vertex* vertices, Mesh::Halfedge* halfedges,
-	uint32_t num_vertices, int* color_mask, int* priorities, bool* done)
-{
+	Mesh::Vertex* vertices,
+	Mesh::Halfedge* halfedges,
+	uint32_t num_vertices,
+	int* color_mask,
+	int* priorities,
+	bool* done
+) {
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
 	if (idx >= num_vertices) return;
 	if (color_mask[idx] != -1) return; // already colored
@@ -211,10 +210,17 @@ __global__ void kernel_color_vertices(
 		*done = false; // still have uncolored vertices
 	}
 }
+
 __global__ void kernel_color_edges(
-	Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Vertex* vertices,
-	uint32_t num_edges, int* color_mask, int* priorities, bool* done)
-{
+	Mesh::Edge* edges,
+	Mesh::Halfedge* halfedges,
+	Mesh::Vertex* vertices,
+	uint32_t num_halfedges,
+	uint32_t num_edges, 
+	int* color_mask,
+	int* priorities,
+	bool* done
+) {
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
 	if (idx >= num_edges) return;
 	if (color_mask[idx] != -1) return; // already colored
@@ -408,7 +414,6 @@ __global__ void kernel_smooth_vertex(
 	center = v.position + smoothing_factor * (center - v.position);
 	Vec3 normal = vertex_normals[index];
 	center = center - dot(normal, center) * normal;
-	std::printf("vertex %d: (%f %f %f) -> (%f %f %f)\n", index, v.position.x, v.position.y, v.position.z, center.x, center.y, center.z);
 	vertex_pos[index] = center;
 }
 
@@ -515,9 +520,15 @@ __global__ void kernel_get_flip_edges(
 	op_mask[idx] = (dev_after < dev_before) ? 1 : 0;
 }
 __global__ void kernel_flip_edge(
-	Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Vertex* vertices, Mesh::Face* faces,
-	uint32_t num_edges, int* edge_color_mask, int* op_mask, int color)
-{
+	Mesh::Edge* edges,
+	Mesh::Halfedge* halfedges,
+	Mesh::Vertex* vertices,
+	Mesh::Face* faces,
+	uint32_t num_edges,
+	int* edge_color_mask,
+	int* op_mask,
+	int color
+) {
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
 	if (idx >= num_edges) return;
 	if (edge_color_mask[idx] != color) return;
@@ -590,8 +601,8 @@ __global__ void kernel_get_edge_lengths(
 	Mesh::Halfedge* halfedges, 
 	Mesh::Vertex* vertices, 
 	float* lengths,
-	uint32_t num_edges)
-{
+	uint32_t num_edges
+) {
 	int index = blockDim.x * blockIdx.x + threadIdx.x;
 	if (index >= num_edges) return;
 
@@ -610,7 +621,6 @@ __global__ void kernel_get_edge_lengths(
 
 	float length = std::sqrt(dx * dx + dy * dy + dz * dz);
 	lengths[index] = length;
-	std::printf("edge %d is length %f\n", index, length);
 }
 
 /**
@@ -618,8 +628,15 @@ __global__ void kernel_get_edge_lengths(
  * which should be collapsed
  */
 __global__ void kernel_get_collapse_edges(
-	Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Face* faces,
-	float* lengths, uint32_t num_edges, float avg_len, float collapse_factor, int* op_mask) {
+	Mesh::Edge* edges, 
+	Mesh::Halfedge* halfedges,
+	Mesh::Face* faces,
+	float* lengths, 
+	uint32_t num_edges, 
+	float avg_len, 
+	float collapse_factor, 
+	int* op_mask
+) {
 	int index = blockDim.x * blockIdx.x + threadIdx.x;
 	if (index >= num_edges) return;
 	op_mask[index] = 0;
@@ -798,9 +815,7 @@ __global__ void kernel_get_split_edges(
 	if (faces[halfedges[h_idx].face_idx].boundary) return;
 	if (faces[halfedges[t_idx].face_idx].boundary) return;
 
-	std::printf("edge %u: length = %f, cmp = %f\n", index, lengths[index], avg_len * split_factor);
 	op_mask[index] = lengths[index] > avg_len * split_factor;
-	if (op_mask[index]) std::printf("edge %u should be split\n", index);
 }
 
 /**
@@ -1026,11 +1041,12 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		blockDim = dim3(256);
 		gridDim = dim3((numEdges + blockDim.x - 1 ) / blockDim.x);
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
+
 		bool h_done = false;
 		while (!h_done) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
-			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
+			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numHalfedges, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
 			CUDA_CHECK("color_edges_top");
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
@@ -1062,7 +1078,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		while (!h_done) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
-			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
+			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numHalfedges, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
 			CUDA_CHECK("color_edges_pre_split");
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
@@ -1178,7 +1194,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		while (!h_done) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
-			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
+			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numHalfedges, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 

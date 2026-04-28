@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include "test.h"
 #include "vec3.h"
+#include <getopt.h>
 
 // Note that element ids may not necessarily map to vector index after a remesh
 Mesh* mesh_from_file(std::string filename) {
@@ -26,6 +27,7 @@ Mesh* mesh_from_file(std::string filename) {
 	std::string line;
 	// loop through all objects and store the raw ids of the elements they refer to
 	while (getline(file, line)) {
+		if (line.length() < 2) continue;
 		uint32_t id = std::stoul(line.substr(2, line.find("]")-1));
 		switch(line[1]) {
 			case 'h':
@@ -109,53 +111,70 @@ Mesh* mesh_from_file(std::string filename) {
 	
 	// loop through the elements again, using the map we created to change the raw IDs to vector indices within the mesh object
 	for (size_t i = 0; i < mesh->halfedges.size(); i++) {
-		Mesh::Halfedge h = mesh->halfedges[i];
-		h.twin_idx = id_to_idx[h.twin_idx];
-		h.next_idx = id_to_idx[h.next_idx];
-		h.vertex_idx = id_to_idx[h.vertex_idx];
-		h.edge_idx = id_to_idx[h.edge_idx];
-		h.face_idx = id_to_idx[h.face_idx];
+		mesh->halfedges[i].twin_idx = id_to_idx[mesh->halfedges[i].twin_idx];
+		mesh->halfedges[i].next_idx = id_to_idx[mesh->halfedges[i].next_idx];
+		mesh->halfedges[i].vertex_idx = id_to_idx[mesh->halfedges[i].vertex_idx];
+		mesh->halfedges[i].edge_idx = id_to_idx[mesh->halfedges[i].edge_idx];
+		mesh->halfedges[i].face_idx = id_to_idx[mesh->halfedges[i].face_idx];
 	}
 	for (size_t i = 0; i < mesh->vertices.size(); i++) {
-		Mesh::Vertex v = mesh->vertices[i];
-		v.halfedge_idx = id_to_idx[v.halfedge_idx];
+		mesh->vertices[i].halfedge_idx = id_to_idx[mesh->vertices[i].halfedge_idx];
 	}
 	for (size_t i = 0; i < mesh->edges.size(); i++) {
-		Mesh::Edge e = mesh->edges[i];
-		e.halfedge_idx = id_to_idx[e.halfedge_idx];
+		mesh->edges[i].halfedge_idx = id_to_idx[mesh->edges[i].halfedge_idx];
 	}
 	for (size_t i = 0; i < mesh->faces.size(); i++) {
-		Mesh::Face f = mesh->faces[i];
-		f.halfedge_idx = id_to_idx[f.halfedge_idx];
+		mesh->faces[i].halfedge_idx = id_to_idx[mesh->faces[i].halfedge_idx];
 	}
 
 	return mesh;
 }
 
-int main() {
-    // CudaRemesher* remesher = new CudaRemesher();
-    // Mesh mesh = Mesh::from_indexed_faces({	
-	// 	Vec3{-1.0f, 1.0f, 1.0f}, 	Vec3{-1.0f, 1.0f, -1.0f},
-	// 	Vec3{-1.0f, -1.0f, -1.0f}, 	Vec3{-1.0f, -1.0f, 1.0f},
-	// 	Vec3{1.0f, -1.0f, -1.0f}, 	Vec3{1.0f, -1.0f, 1.0f},
-	// 	Vec3{1.0f, 1.0f, -1.0f}, 	Vec3{1.0f, 1.0f, 1.0f}
-	// },{
-	// 	{3, 0, 1, 2}, 
-	// 	{5, 3, 2, 4}, 
-	// 	{7, 5, 4, 6}, 
-	// 	{0, 7, 6, 1}, 
-	// 	{0, 3, 5, 7}, 
-	// 	{6, 4, 2, 1} });
-	// // std::printf("finished mesh creation\n");
-    // remesher->setup(mesh);
-	// Isotropic_Remesh_Params params{
-	// 	1, 1.5f, 0.5f, 1, 1.0f
-	// };
-	// remesher->isotropic_remesh(params);
-	test_converge();
-	Mesh* mesh = mesh_from_file("tests/test1.txt");
-	// mesh->describe();
+void help()
+{
+	printf("Usage: ./remesh [options] meshfile\n");
+	printf("Options:\n");
+	printf("\t-r seq/par	Remesher type: `seq` for sequential, `par` for parallel (CUDA)\n");
+	printf("\t-b t			CUDA block size of `t`, i.e. t threads per block\n");
+	printf("\t-o filename	Output mesh description to filename\n");
+	printf("")
+}
+
+int main(int argc, char* argv[]) {
+	int opt;
+	std::string remesher_type;
+	std::string input_file;
+	bool verbose = false;
+	while ((opt = getopt(argc, argv, ":r:b:o:vh")) != -1) {
+		switch(opt) {
+			case 'r':
+				remesher_type = optarg;
+				printf("%s\n", optarg);
+				break;
+			case 'h':
+				help();
+				exit();
+				break;
+			case 'b':
+				break;
+			case 'o':
+				break;
+			case 'v':
+				verbose = true;
+				break;
+		}
+	}
+    CudaRemesher* remesher = new CudaRemesher();
+	Mesh* mesh = mesh_from_file("tests/test2.txt");
+
+    remesher->setup(*mesh);
+	Isotropic_Remesh_Params params{
+		1, 1.5f, 0.5f, 1, 1.0f
+	};
+	mesh->describe();
+	remesher->isotropic_remesh(params);
+	// test_converge();
+
 	free(mesh);
     return 0;
-
 }
