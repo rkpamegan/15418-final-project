@@ -773,12 +773,12 @@ __global__ void kernel_split_edge(
 		faces[f2].halfedge_idx = nAM_idx; faces[f2].id = f2; faces[f2].boundary = false;
 		faces[f3].halfedge_idx = nMD_idx; faces[f3].id = f3; faces[f3].boundary = false;
 
-		halfedges[nMA_idx] = {vM,  hp_idx, nAM_idx, eMA_idx, f0,  nMA_idx};
-		halfedges[nAM_idx] = {vA,  nMC_idx, nMA_idx, eMA_idx, f2, nAM_idx};
-		halfedges[nMC_idx] = {vM,  hn_idx, nCM_idx, eMC_idx, f2, nMC_idx};
-		halfedges[nCM_idx] = {vC,  nMD_idx, nMC_idx, eMC_idx, f3, nCM_idx};
-		halfedges[nDM_idx] = {vD,  t_idx,  nMD_idx, eMD_idx, f1, nDM_idx};
-		halfedges[nMD_idx] = {vM,  tp_idx, nDM_idx, eMD_idx, f3, nMD_idx};
+		halfedges[nMA_idx].vertex_idx = vM;  halfedges[nMA_idx].next_idx = hp_idx;  halfedges[nMA_idx].twin_idx = nAM_idx; halfedges[nMA_idx].edge_idx = eMA_idx; halfedges[nMA_idx].face_idx = f0;  halfedges[nMA_idx].id = nMA_idx;
+		halfedges[nAM_idx].vertex_idx = vA;  halfedges[nAM_idx].next_idx = nMC_idx; halfedges[nAM_idx].twin_idx = nMA_idx; halfedges[nAM_idx].edge_idx = eMA_idx; halfedges[nAM_idx].face_idx = f2;  halfedges[nAM_idx].id = nAM_idx;
+		halfedges[nMC_idx].vertex_idx = vM;  halfedges[nMC_idx].next_idx = hn_idx;  halfedges[nMC_idx].twin_idx = nCM_idx; halfedges[nMC_idx].edge_idx = eMC_idx; halfedges[nMC_idx].face_idx = f2;  halfedges[nMC_idx].id = nMC_idx;
+		halfedges[nCM_idx].vertex_idx = vC;  halfedges[nCM_idx].next_idx = nMD_idx; halfedges[nCM_idx].twin_idx = nMC_idx; halfedges[nCM_idx].edge_idx = eMC_idx; halfedges[nCM_idx].face_idx = f3;  halfedges[nCM_idx].id = nCM_idx;
+		halfedges[nDM_idx].vertex_idx = vD;  halfedges[nDM_idx].next_idx = t_idx;   halfedges[nDM_idx].twin_idx = nMD_idx; halfedges[nDM_idx].edge_idx = eMD_idx; halfedges[nDM_idx].face_idx = f1;  halfedges[nDM_idx].id = nDM_idx;
+		halfedges[nMD_idx].vertex_idx = vM;  halfedges[nMD_idx].next_idx = tp_idx;  halfedges[nMD_idx].twin_idx = nDM_idx; halfedges[nMD_idx].edge_idx = eMD_idx; halfedges[nMD_idx].face_idx = f3;  halfedges[nMD_idx].id = nMD_idx;
 
 		halfedges[h_idx].next_idx  = nMA_idx;
 		halfedges[t_idx].vertex_idx = vM;
