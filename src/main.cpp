@@ -183,23 +183,24 @@ int main() {
 	delete remesher;
 	delete mesh;
 
-	// Speedup test: run test1.txt with varying block sizes
-	std::printf("\n=== Speedup Test: varying block_size on tests/test1.txt ===\n");
-	std::printf("%-12s %12s\n", "block_size", "total_ms");
 	uint32_t block_sizes[] = {32, 64, 128, 256, 512, 1024};
-	for (uint32_t bs : block_sizes) {
-		cuda_clear_last_error(); // clear any stale error from previous destructor
-		srand(42); // fix seed so each run uses the same coloring priorities
-		Mesh* m = mesh_from_file("tests/test1.txt");
-		if (!m) { std::printf("failed to open tests/test1.txt\n"); break; }
-		CudaRemesher* r = new CudaRemesher();
-		r->setup(*m);
-		// Redirect per-iteration output by running quietly — timing is printed inside
-		std::printf("--- block_size=%u ---\n", bs);
-		Isotropic_Remesh_Params p{ 1, 1.5f, 0.5f, 1, 0.5f, bs };
-		r->isotropic_remesh(p);
-		delete r;
-		delete m;
+	const char* test_files[] = {"tests/test1.txt", "tests/test2.txt"};
+	for (const char* fname : test_files) {
+		std::printf("\n=== Speedup Test: varying block_size on %s ===\n", fname);
+		std::printf("%-12s %12s\n", "block_size", "total_ms");
+		for (uint32_t bs : block_sizes) {
+			cuda_clear_last_error();
+			srand(42);
+			Mesh* m = mesh_from_file(fname);
+			if (!m) { std::printf("failed to open %s\n", fname); break; }
+			CudaRemesher* r = new CudaRemesher();
+			r->setup(*m);
+			std::printf("--- block_size=%u ---\n", bs);
+			Isotropic_Remesh_Params p{ 1, 1.5f, 0.5f, 1, 0.5f, bs };
+			r->isotropic_remesh(p);
+			delete r;
+			delete m;
+		}
 	}
 
 	return 0;
