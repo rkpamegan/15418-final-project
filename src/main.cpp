@@ -165,11 +165,11 @@ int main() {
 	test_collapse_edge();
 	test_converge();
 
-	// Run remesh on test2 dataset (medium scale) to validate at scale
-	std::printf("\n=== Loading tests/test2.txt ===\n");
-	Mesh* mesh = mesh_from_file("tests/test2.txt");
+	// Run remesh on test1 dataset (large scale) to validate at full scale
+	std::printf("\n=== Loading tests/test1.txt ===\n");
+	Mesh* mesh = mesh_from_file("tests/test1.txt");
 	if (mesh == nullptr) {
-		std::printf("failed to open tests/test2.txt\n");
+		std::printf("failed to open tests/test1.txt\n");
 		return 1;
 	}
 	std::printf("Loaded mesh: %zu verts, %zu edges, %zu halfedges, %zu faces\n",
