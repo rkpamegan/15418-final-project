@@ -15,8 +15,12 @@ Mesh* mesh_from_file(std::string filename) {
 	if (!file.is_open()) {
 		return nullptr;
 	}
-	// maps id to position in respective element array
-	std::unordered_map< uint32_t, uint32_t> id_to_idx;
+	// per-type maps from raw id -> index in respective element array
+	// (raw ids overlap across element types so a single global map is wrong)
+	std::unordered_map<uint32_t, uint32_t> h_id_to_idx;
+	std::unordered_map<uint32_t, uint32_t> v_id_to_idx;
+	std::unordered_map<uint32_t, uint32_t> e_id_to_idx;
+	std::unordered_map<uint32_t, uint32_t> f_id_to_idx;
 	uint32_t h_idx = 0;
 	uint32_t v_idx = 0;
 	uint32_t e_idx = 0;
@@ -50,7 +54,7 @@ Mesh* mesh_from_file(std::string filename) {
 				h.face_idx = f_id;
 				h.id = h_idx++;
 				mesh->halfedges.emplace_back(h);
-				id_to_idx.insert({id, h.id});
+				h_id_to_idx.insert({id, h.id});
 				break;
 			}
 			case 'v':
@@ -71,7 +75,7 @@ Mesh* mesh_from_file(std::string filename) {
 				v.halfedge_idx = h_id;
 				v.id = v_idx++;
 				mesh->vertices.emplace_back(v);
-				id_to_idx.insert({id, v.id});
+				v_id_to_idx.insert({id, v.id});
 				break;
 			}
 			case 'e':
@@ -84,7 +88,7 @@ Mesh* mesh_from_file(std::string filename) {
 				e.halfedge_idx = h_id;
 				e.id = e_idx++;
 				mesh->edges.emplace_back(e);
-				id_to_idx.insert({id, e.id});
+				e_id_to_idx.insert({id, e.id});
 				break;
 			}
 			case 'f':
@@ -100,33 +104,34 @@ Mesh* mesh_from_file(std::string filename) {
 				f.halfedge_idx = h_id;
 				f.id = f_idx++;
 				mesh->faces.emplace_back(f);
-				id_to_idx.insert({id, f.id});
+				f_id_to_idx.insert({id, f.id});
 				break;
 			}
 		}
 	}
 	file.close();
 	
-	// loop through the elements again, using the map we created to change the raw IDs to vector indices within the mesh object
+	// loop through the elements again, using the per-type maps to change raw IDs to vector indices.
+	// Use references so the writes actually persist into the mesh.
 	for (size_t i = 0; i < mesh->halfedges.size(); i++) {
-		Mesh::Halfedge h = mesh->halfedges[i];
-		h.twin_idx = id_to_idx[h.twin_idx];
-		h.next_idx = id_to_idx[h.next_idx];
-		h.vertex_idx = id_to_idx[h.vertex_idx];
-		h.edge_idx = id_to_idx[h.edge_idx];
-		h.face_idx = id_to_idx[h.face_idx];
+		Mesh::Halfedge& h = mesh->halfedges[i];
+		h.twin_idx = h_id_to_idx[h.twin_idx];
+		h.next_idx = h_id_to_idx[h.next_idx];
+		h.vertex_idx = v_id_to_idx[h.vertex_idx];
+		h.edge_idx = e_id_to_idx[h.edge_idx];
+		h.face_idx = f_id_to_idx[h.face_idx];
 	}
 	for (size_t i = 0; i < mesh->vertices.size(); i++) {
-		Mesh::Vertex v = mesh->vertices[i];
-		v.halfedge_idx = id_to_idx[v.halfedge_idx];
+		Mesh::Vertex& v = mesh->vertices[i];
+		v.halfedge_idx = h_id_to_idx[v.halfedge_idx];
 	}
 	for (size_t i = 0; i < mesh->edges.size(); i++) {
-		Mesh::Edge e = mesh->edges[i];
-		e.halfedge_idx = id_to_idx[e.halfedge_idx];
+		Mesh::Edge& e = mesh->edges[i];
+		e.halfedge_idx = h_id_to_idx[e.halfedge_idx];
 	}
 	for (size_t i = 0; i < mesh->faces.size(); i++) {
-		Mesh::Face f = mesh->faces[i];
-		f.halfedge_idx = id_to_idx[f.halfedge_idx];
+		Mesh::Face& f = mesh->faces[i];
+		f.halfedge_idx = h_id_to_idx[f.halfedge_idx];
 	}
 
 	return mesh;
@@ -152,10 +157,26 @@ int main() {
 	// 	1, 1.5f, 0.5f, 1, 1.0f
 	// };
 	// remesher->isotropic_remesh(params);
+	test_split_edge();
+	test_collapse_edge();
 	test_converge();
-	Mesh* mesh = mesh_from_file("tests/test1.txt");
-	// mesh->describe();
-	free(mesh);
-    return 0;
 
+	// Run remesh on smallest dataset to validate full pipeline on a real mesh
+	std::printf("\n=== Loading tests/test3.txt ===\n");
+	Mesh* mesh = mesh_from_file("tests/test3.txt");
+	if (mesh == nullptr) {
+		std::printf("failed to open tests/test3.txt\n");
+		return 1;
+	}
+	std::printf("Loaded mesh: %zu verts, %zu edges, %zu halfedges, %zu faces\n",
+		mesh->vertices.size(), mesh->edges.size(), mesh->halfedges.size(), mesh->faces.size());
+
+	CudaRemesher* remesher = new CudaRemesher();
+	remesher->setup(*mesh);
+	Isotropic_Remesh_Params params{ 3, 1.5f, 0.5f, 1, 0.5f };
+	remesher->isotropic_remesh(params);
+
+	delete remesher;
+	delete mesh;
+	return 0;
 }
