@@ -142,8 +142,6 @@ Mesh* mesh_from_file(std::string filename) {
 }
 
 int main() {
-	// Force line-buffered stdout so progress is visible if a hang occurs.
-	setvbuf(stdout, NULL, _IOLBF, 0);
     // CudaRemesher* remesher = new CudaRemesher();
     // Mesh mesh = Mesh::from_indexed_faces({	
 	// 	Vec3{-1.0f, 1.0f, 1.0f}, 	Vec3{-1.0f, 1.0f, -1.0f},
@@ -163,11 +161,8 @@ int main() {
 	// 	1, 1.5f, 0.5f, 1, 1.0f
 	// };
 	// remesher->isotropic_remesh(params);
-	std::printf("\n=== test_split_edge ===\n");
 	test_split_edge();
-	std::printf("\n=== test_collapse_edge ===\n");
 	test_collapse_edge();
-	std::printf("\n=== test_converge ===\n");
 	test_converge();
 
 	// Run remesh on test1 dataset (large scale) to validate at full scale
