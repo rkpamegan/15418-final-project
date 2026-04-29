@@ -196,7 +196,7 @@ int main() {
 		r->setup(*m);
 		// Redirect per-iteration output by running quietly — timing is printed inside
 		std::printf("--- block_size=%u ---\n", bs);
-		Isotropic_Remesh_Params p{ 3, 1.5f, 0.5f, 1, 0.5f, bs };
+		Isotropic_Remesh_Params p{ 1, 1.5f, 0.5f, 1, 0.5f, bs };
 		r->isotropic_remesh(p);
 		delete r;
 		delete m;
