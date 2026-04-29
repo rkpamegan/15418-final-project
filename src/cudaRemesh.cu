@@ -1182,6 +1182,90 @@ __global__ void kernel_split_edge(
 
 //isotropic_remesh: improves mesh quality through local operations.
 // Do note that this requires a working implementation of EdgeSplit, EdgeFlip, and EdgeCollapse
+
+// Threshold: use cooperative-launch persistent coloring kernel only when the
+// problem is large enough to amortize launch + grid.sync() overhead AND large
+// enough that the original host-driven loop is actually slow. Below this we
+// fall back to the proven legacy loop (also avoids degenerate-case pathologies
+// in tiny synthetic unit tests).
+static constexpr uint32_t COLOR_PERSISTENT_MIN_ELEMENTS = 256;
+
+static inline void color_edges_dispatch(
+	dim3 gridDim, dim3 blockDim,
+	Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Vertex* vertices,
+	uint32_t num_edges, int* color_mask, int* priorities, int* d_done,
+	const char* label)
+{
+	if (num_edges >= COLOR_PERSISTENT_MIN_ELEMENTS) {
+		void* args[] = { &edges, &halfedges, &vertices, &num_edges,
+		                 &color_mask, &priorities, &d_done };
+		cudaError_t err = cudaLaunchCooperativeKernel(
+			(void*)kernel_color_edges_persistent, gridDim, blockDim, args);
+		if (err != cudaSuccess) {
+			std::printf("[CUDA ERROR @ %s coop-launch] %s\n", label, cudaGetErrorString(err));
+			std::fflush(stdout);
+		}
+		cudaError_t s = cudaDeviceSynchronize();
+		if (s != cudaSuccess) {
+			std::printf("[CUDA ERROR @ %s sync] %s\n", label, cudaGetErrorString(s));
+			std::fflush(stdout);
+			std::abort();
+		}
+		return;
+	}
+	// Legacy host-driven loop (small mesh).
+	int h_done_int = 0;
+	bool h_done = false;
+	while (!h_done) {
+		h_done_int = 1; // host writes 1
+		cudaMemcpy(d_done, &h_done_int, sizeof(int), cudaMemcpyHostToDevice);
+		kernel_color_edges<<<gridDim, blockDim>>>(edges, halfedges, vertices,
+			num_edges, color_mask, priorities, (bool*)d_done);
+		cudaDeviceSynchronize();
+		// kernel_color_edges writes bool false (0) into the same memory if
+		// not done; bool and int share the low byte.
+		cudaMemcpy(&h_done_int, d_done, sizeof(int), cudaMemcpyDeviceToHost);
+		// Done if low byte is non-zero (true).
+		h_done = (h_done_int & 0xff) != 0;
+	}
+}
+
+static inline void color_vertices_dispatch(
+	dim3 gridDim, dim3 blockDim,
+	Mesh::Vertex* vertices, Mesh::Halfedge* halfedges,
+	uint32_t num_vertices, int* color_mask, int* priorities, int* d_done,
+	const char* label)
+{
+	if (num_vertices >= COLOR_PERSISTENT_MIN_ELEMENTS) {
+		void* args[] = { &vertices, &halfedges, &num_vertices,
+		                 &color_mask, &priorities, &d_done };
+		cudaError_t err = cudaLaunchCooperativeKernel(
+			(void*)kernel_color_vertices_persistent, gridDim, blockDim, args);
+		if (err != cudaSuccess) {
+			std::printf("[CUDA ERROR @ %s coop-launch] %s\n", label, cudaGetErrorString(err));
+			std::fflush(stdout);
+		}
+		cudaError_t s = cudaDeviceSynchronize();
+		if (s != cudaSuccess) {
+			std::printf("[CUDA ERROR @ %s sync] %s\n", label, cudaGetErrorString(s));
+			std::fflush(stdout);
+			std::abort();
+		}
+		return;
+	}
+	int h_done_int = 0;
+	bool h_done = false;
+	while (!h_done) {
+		h_done_int = 1;
+		cudaMemcpy(d_done, &h_done_int, sizeof(int), cudaMemcpyHostToDevice);
+		kernel_color_vertices<<<gridDim, blockDim>>>(vertices, halfedges,
+			num_vertices, color_mask, priorities, (bool*)d_done);
+		cudaDeviceSynchronize();
+		cudaMemcpy(&h_done_int, d_done, sizeof(int), cudaMemcpyDeviceToHost);
+		h_done = (h_done_int & 0xff) != 0;
+	}
+}
+
 void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 	dim3 blockDim;
 	dim3 gridDim;
@@ -1223,13 +1307,10 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		gridDim = dim3((numEdges + blockDim.x - 1 ) / blockDim.x);
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
 		cudaDeviceSynchronize(); auto _ts = clk::now();
-		{
-			void* args[] = { &cudaDeviceEdges, &cudaDeviceHalfedges, &cudaDeviceVertices,
-			                 &numEdges, &edge_color_mask, &edge_priorities, &d_coloring_done };
-			cudaLaunchCooperativeKernel((void*)kernel_color_edges_persistent,
-			                            gridDim, blockDim, args);
-			CUDA_CHECK("color_edges_top");
-		}
+		color_edges_dispatch(gridDim, blockDim,
+			cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices,
+			numEdges, edge_color_mask, edge_priorities, d_coloring_done,
+			"color_edges_top");
 		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 		
 		// color_mask holds color of corresponding edge
@@ -1258,13 +1339,10 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		// Recolor edges after flip (connectivity changed)
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
 		cudaDeviceSynchronize(); _ts = clk::now();
-		{
-			void* args[] = { &cudaDeviceEdges, &cudaDeviceHalfedges, &cudaDeviceVertices,
-			                 &numEdges, &edge_color_mask, &edge_priorities, &d_coloring_done };
-			cudaLaunchCooperativeKernel((void*)kernel_color_edges_persistent,
-			                            gridDim, blockDim, args);
-			CUDA_CHECK("color_edges_pre_split");
-		}
+		color_edges_dispatch(gridDim, blockDim,
+			cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices,
+			numEdges, edge_color_mask, edge_priorities, d_coloring_done,
+			"color_edges_pre_split");
 		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
 		// === SPLIT ===
@@ -1377,13 +1455,10 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		// Recolor edges (split changed connectivity)
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
 		cudaDeviceSynchronize(); _ts = clk::now();
-		{
-			void* args[] = { &cudaDeviceEdges, &cudaDeviceHalfedges, &cudaDeviceVertices,
-			                 &numEdges, &edge_color_mask, &edge_priorities, &d_coloring_done };
-			cudaLaunchCooperativeKernel((void*)kernel_color_edges_persistent,
-			                            gridDim, blockDim, args);
-			CUDA_CHECK("color_edges_pre_collapse");
-		}
+		color_edges_dispatch(gridDim, blockDim,
+			cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices,
+			numEdges, edge_color_mask, edge_priorities, d_coloring_done,
+			"color_edges_pre_collapse");
 		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
 		cudaDeviceSynchronize(); _ts = clk::now();
@@ -1406,13 +1481,10 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		// Color vertices using Jones-Plassmann algorithm
 		cudaMemset(vertex_color_mask, -1, sizeof(int) * numVertices); // reset all to -1 (uncolored)
 		cudaDeviceSynchronize(); _ts = clk::now();
-		{
-			void* args[] = { &cudaDeviceVertices, &cudaDeviceHalfedges,
-			                 &numVertices, &vertex_color_mask, &vertex_priorities, &d_coloring_done };
-			cudaLaunchCooperativeKernel((void*)kernel_color_vertices_persistent,
-			                            gridDim, blockDim, args);
-			CUDA_CHECK("color_vertices");
-		}
+		color_vertices_dispatch(gridDim, blockDim,
+			cudaDeviceVertices, cudaDeviceHalfedges,
+			numVertices, vertex_color_mask, vertex_priorities, d_coloring_done,
+			"color_vertices");
 
 		cuda_max_color = thrust::max_element(thrust::device, vertex_color_mask, vertex_color_mask + numVertices);
 		CUDA_CHECK("max_element_v");
