@@ -8,7 +8,6 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <cooperative_groups.h>
 #include "thrust/scan.h"
 #include "thrust/reduce.h"
 #include "thrust/functional.h"
@@ -137,7 +136,7 @@ void CudaRemesher::setup(Mesh &_mesh) {
 	cudaMalloc(&edge_priorities, sizeof(int) * numEdges);
 	cudaMemcpy(edge_priorities, h_edge_priorities.data(), sizeof(int) * numEdges, cudaMemcpyHostToDevice);
 
-	cudaMalloc(&d_coloring_done, sizeof(int));
+	cudaMalloc(&d_coloring_done, sizeof(bool));
 }
 
 // Updates mesh fields to the remeshed values
@@ -315,177 +314,6 @@ __global__ void kernel_color_edges(
 		color_mask[idx] = color;
 	} else {
 		*done = false;
-	}
-}
-
-namespace cg = cooperative_groups;
-
-/**
- * Persistent edge-coloring kernel: runs the entire Jones-Plassmann fix-point
- * loop inside a single grid-cooperative kernel, eliminating ~3 host<->device
- * round-trips per inner iteration. Launched with cudaLaunchCooperativeKernel.
- *
- * Convention: *done is an int (1=converged, 0=more work this round).
- * Caller must memset color_mask to -1 before launch.
- */
-__global__ void kernel_color_edges_persistent(
-	Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Vertex* vertices,
-	uint32_t num_edges, int* color_mask, int* priorities, int* done)
-{
-	cg::grid_group grid = cg::this_grid();
-	int idx = blockDim.x * blockIdx.x + threadIdx.x;
-
-	while (true) {
-		// One thread resets the done flag for this round.
-		if (idx == 0) *done = 1;
-		grid.sync();
-
-		// === per-thread coloring step (mirrors kernel_color_edges body) ===
-		if (idx < num_edges && color_mask[idx] == -1) {
-			bool is_local_max = true;
-			uint32_t used_colors = 0;
-
-			uint32_t h_idx = edges[idx].halfedge_idx;
-			if (h_idx == INVALID_IDX) {
-				color_mask[idx] = 0;
-			} else {
-				uint32_t v1 = halfedges[h_idx].vertex_idx;
-				uint32_t twin_idx = halfedges[h_idx].twin_idx;
-				uint32_t v2 = (twin_idx != INVALID_IDX) ? halfedges[twin_idx].vertex_idx : INVALID_IDX;
-
-				if (v1 == INVALID_IDX) {
-					color_mask[idx] = 0;
-				} else {
-					// walk around v1
-					uint32_t start_he = vertices[v1].halfedge_idx;
-					if (start_he != INVALID_IDX && halfedges[start_he].vertex_idx != INVALID_IDX) {
-						uint32_t he = start_he;
-						int guard1 = 0;
-						do {
-							uint32_t neighbor_edge = halfedges[he].edge_idx;
-							if (neighbor_edge != idx && neighbor_edge != INVALID_IDX) {
-								if (color_mask[neighbor_edge] == -1) {
-									if (priorities[neighbor_edge] > priorities[idx] ||
-										(priorities[neighbor_edge] == priorities[idx] && neighbor_edge > idx)) {
-										is_local_max = false;
-										break;
-									}
-								} else if (color_mask[neighbor_edge] < 32) {
-									used_colors |= (1u << color_mask[neighbor_edge]);
-								}
-							}
-							uint32_t tw = halfedges[he].twin_idx;
-							if (tw == INVALID_IDX) break;
-							he = halfedges[tw].next_idx;
-							if (he == INVALID_IDX) break;
-							if (++guard1 > 1024) break;
-						} while (he != start_he);
-					}
-
-					// walk around v2
-					if (is_local_max && v2 != INVALID_IDX) {
-						start_he = vertices[v2].halfedge_idx;
-						if (start_he != INVALID_IDX && halfedges[start_he].vertex_idx != INVALID_IDX) {
-							uint32_t he = start_he;
-							int guard2 = 0;
-							do {
-								uint32_t neighbor_edge = halfedges[he].edge_idx;
-								if (neighbor_edge != idx && neighbor_edge != INVALID_IDX) {
-									if (color_mask[neighbor_edge] == -1) {
-										if (priorities[neighbor_edge] > priorities[idx] ||
-											(priorities[neighbor_edge] == priorities[idx] && neighbor_edge > idx)) {
-											is_local_max = false;
-											break;
-										}
-									} else if (color_mask[neighbor_edge] < 32) {
-										used_colors |= (1u << color_mask[neighbor_edge]);
-									}
-								}
-								uint32_t tw = halfedges[he].twin_idx;
-								if (tw == INVALID_IDX) break;
-								he = halfedges[tw].next_idx;
-								if (he == INVALID_IDX) break;
-								if (++guard2 > 1024) break;
-							} while (he != start_he);
-						}
-					}
-
-					if (is_local_max) {
-						int color = 0;
-						while (used_colors & (1u << color)) color++;
-						color_mask[idx] = color;
-					} else {
-						atomicExch(done, 0); // still uncolored work remains
-					}
-				}
-			}
-		}
-		grid.sync();
-		if (*done == 1) break;
-	}
-}
-
-/**
- * Persistent vertex-coloring kernel. Same idea as the edge variant.
- */
-__global__ void kernel_color_vertices_persistent(
-	Mesh::Vertex* vertices, Mesh::Halfedge* halfedges,
-	uint32_t num_vertices, int* color_mask, int* priorities, int* done)
-{
-	cg::grid_group grid = cg::this_grid();
-	int idx = blockDim.x * blockIdx.x + threadIdx.x;
-
-	while (true) {
-		if (idx == 0) *done = 1;
-		grid.sync();
-
-		if (idx < num_vertices && color_mask[idx] == -1) {
-			bool is_local_max = true;
-			uint32_t used_colors = 0;
-
-			uint32_t start_he = vertices[idx].halfedge_idx;
-			if (start_he == INVALID_IDX) {
-				color_mask[idx] = 0;
-			} else if (halfedges[start_he].vertex_idx == INVALID_IDX) {
-				color_mask[idx] = 0;
-			} else {
-				uint32_t he = start_he;
-				int guard = 0;
-				do {
-					uint32_t twin_he = halfedges[he].twin_idx;
-					if (twin_he == INVALID_IDX) break;
-					uint32_t neighbor = halfedges[twin_he].vertex_idx;
-					if (neighbor == INVALID_IDX) break;
-
-					if (color_mask[neighbor] == -1) {
-						if (priorities[neighbor] > priorities[idx]) {
-							is_local_max = false;
-							break;
-						}
-						if (priorities[neighbor] == priorities[idx] && neighbor > idx) {
-							is_local_max = false;
-							break;
-						}
-					} else if (color_mask[neighbor] < 32) {
-						used_colors |= (1u << color_mask[neighbor]);
-					}
-
-					he = halfedges[twin_he].next_idx;
-					if (he == INVALID_IDX) break;
-					if (++guard > 1024) break;
-				} while (he != start_he);
-
-				if (is_local_max) {
-					int color = 0;
-					while (used_colors & (1u << color)) color++;
-					color_mask[idx] = color;
-				} else {
-					atomicExch(done, 0);
-				}
-			}
-		}
-		grid.sync();
-		if (*done == 1) break;
 	}
 }
 
@@ -1220,13 +1048,14 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		blockDim = dim3(256);
 		gridDim = dim3((numEdges + blockDim.x - 1 ) / blockDim.x);
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
+		bool h_done = false;
 		cudaDeviceSynchronize(); auto _ts = clk::now();
-		{
-			void* args[] = { &cudaDeviceEdges, &cudaDeviceHalfedges, &cudaDeviceVertices,
-			                 &numEdges, &edge_color_mask, &edge_priorities, &d_coloring_done };
-			cudaLaunchCooperativeKernel((void*)kernel_color_edges_persistent,
-			                            gridDim, blockDim, args);
+		while (!h_done) {
+			h_done = true;
+			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
+			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
 			CUDA_CHECK("color_edges_top");
+			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 		
@@ -1255,13 +1084,14 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 
 		// Recolor edges after flip (connectivity changed)
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
+		h_done = false;
 		cudaDeviceSynchronize(); _ts = clk::now();
-		{
-			void* args[] = { &cudaDeviceEdges, &cudaDeviceHalfedges, &cudaDeviceVertices,
-			                 &numEdges, &edge_color_mask, &edge_priorities, &d_coloring_done };
-			cudaLaunchCooperativeKernel((void*)kernel_color_edges_persistent,
-			                            gridDim, blockDim, args);
+		while (!h_done) {
+			h_done = true;
+			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
+			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
 			CUDA_CHECK("color_edges_pre_split");
+			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
@@ -1374,13 +1204,13 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 
 		// Recolor edges (split changed connectivity)
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
+		h_done = false;
 		cudaDeviceSynchronize(); _ts = clk::now();
-		{
-			void* args[] = { &cudaDeviceEdges, &cudaDeviceHalfedges, &cudaDeviceVertices,
-			                 &numEdges, &edge_color_mask, &edge_priorities, &d_coloring_done };
-			cudaLaunchCooperativeKernel((void*)kernel_color_edges_persistent,
-			                            gridDim, blockDim, args);
-			CUDA_CHECK("color_edges_pre_collapse");
+		while (!h_done) {
+			h_done = true;
+			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
+			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
+			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
@@ -1403,13 +1233,14 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		gridDim = dim3((numVertices + blockDim.x - 1) / blockDim.x);
 		// Color vertices using Jones-Plassmann algorithm
 		cudaMemset(vertex_color_mask, -1, sizeof(int) * numVertices); // reset all to -1 (uncolored)
+		h_done = false;
 		cudaDeviceSynchronize(); _ts = clk::now();
-		{
-			void* args[] = { &cudaDeviceVertices, &cudaDeviceHalfedges,
-			                 &numVertices, &vertex_color_mask, &vertex_priorities, &d_coloring_done };
-			cudaLaunchCooperativeKernel((void*)kernel_color_vertices_persistent,
-			                            gridDim, blockDim, args);
+		while (!h_done) {
+			h_done = true;
+			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
+			kernel_color_vertices<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceHalfedges, numVertices, vertex_color_mask, vertex_priorities, d_coloring_done);
 			CUDA_CHECK("color_vertices");
+			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 
 		cuda_max_color = thrust::max_element(thrust::device, vertex_color_mask, vertex_color_mask + numVertices);
