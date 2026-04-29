@@ -30,7 +30,11 @@ Mesh* mesh_from_file(std::string filename) {
 	std::string line;
 	// loop through all objects and store the raw ids of the elements they refer to
 	while (getline(file, line)) {
-		uint32_t id = std::stoul(line.substr(2, line.find("]")-1));
+		// skip blank / too-short lines (need at least "[x0]")
+		if (line.size() < 4 || line[0] != '[') continue;
+		size_t rbr = line.find(']');
+		if (rbr == std::string::npos || rbr <= 2) continue;
+		uint32_t id = std::stoul(line.substr(2, rbr - 2));
 		switch(line[1]) {
 			case 'h':
 			{
