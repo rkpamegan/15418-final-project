@@ -13,6 +13,7 @@
 #include "thrust/functional.h"
 
 #include <cstdlib>
+#include <chrono>
 
 #include "mesh.h"
 #include "cudaRemesh.h"
@@ -1036,12 +1037,19 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 	//      lists they are looping over. Take care to avoid use-after-free
 	//      or infinite-loop problems.
 
+	// Per-phase wall-time accumulators (ms). Each phase is bracketed by
+	// cudaDeviceSynchronize() so kernel launch latency is fully captured.
+	using clk = std::chrono::steady_clock;
+	auto t_total_begin = clk::now();
+	double ms_color = 0, ms_flip = 0, ms_split = 0, ms_collapse = 0, ms_smooth = 0;
+
 	for (int t = 0; t < params.num_iters; t++) {
 		std::printf("iteration %d of remeshing\n", t);
 		blockDim = dim3(256);
 		gridDim = dim3((numEdges + blockDim.x - 1 ) / blockDim.x);
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
 		bool h_done = false;
+		cudaDeviceSynchronize(); auto _ts = clk::now();
 		while (!h_done) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
@@ -1049,6 +1057,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			CUDA_CHECK("color_edges_top");
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
+		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 		
 		// color_mask holds color of corresponding edge
 		// get max color in color_mask
@@ -1056,6 +1065,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		int max_color;
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 		
+		cudaDeviceSynchronize(); _ts = clk::now();
 		kernel_get_flip_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_op_mask);
 		CUDA_CHECK("get_flip_edges");
 		for (int c = 0; c <= max_color; c++) {
@@ -1064,6 +1074,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			kernel_flip_edge<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_color_mask, edge_op_mask, c);
 			CUDA_CHECK("flip_edge");
 		}
+		ms_flip += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
 		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, edge_lengths, numEdges);
 		CUDA_CHECK("get_edge_lengths_1");
@@ -1074,6 +1085,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		// Recolor edges after flip (connectivity changed)
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
 		h_done = false;
+		cudaDeviceSynchronize(); _ts = clk::now();
 		while (!h_done) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
@@ -1081,8 +1093,10 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			CUDA_CHECK("color_edges_pre_split");
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
+		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
 		// === SPLIT ===
+		cudaDeviceSynchronize(); _ts = clk::now();
 		kernel_get_split_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces, edge_lengths, numEdges, avg_len, params.split_factor, edge_op_mask);
 		CUDA_CHECK("get_split_edges");
 
@@ -1177,6 +1191,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		}
 		cudaFree(split_offsets);
 		split_offsets = NULL;
+		ms_split += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
 		// === COLLAPSE ===
 		// Recompute edge lengths (split may have changed the mesh)
@@ -1190,13 +1205,16 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		// Recolor edges (split changed connectivity)
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
 		h_done = false;
+		cudaDeviceSynchronize(); _ts = clk::now();
 		while (!h_done) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
 			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
+		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
+		cudaDeviceSynchronize(); _ts = clk::now();
 		kernel_get_collapse_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces, edge_lengths, numEdges, avg_len, params.collapse_factor, edge_op_mask);
 		CUDA_CHECK("get_collapse_edges");
 
@@ -1210,11 +1228,13 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 				edge_color_mask, edge_op_mask, numEdges, c);
 			CUDA_CHECK("collapse_edge");
 		}
+		ms_collapse += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
 		gridDim = dim3((numVertices + blockDim.x - 1) / blockDim.x);
 		// Color vertices using Jones-Plassmann algorithm
 		cudaMemset(vertex_color_mask, -1, sizeof(int) * numVertices); // reset all to -1 (uncolored)
 		h_done = false;
+		cudaDeviceSynchronize(); _ts = clk::now();
 		while (!h_done) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
@@ -1226,6 +1246,9 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		cuda_max_color = thrust::max_element(thrust::device, vertex_color_mask, vertex_color_mask + numVertices);
 		CUDA_CHECK("max_element_v");
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
+		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
+
+		cudaDeviceSynchronize(); _ts = clk::now();
 		for (int i = 0; i < params.smoothing_iters; i++) {
 			VPRINTF("iteration %d of vertex smoothing\n", i);
 			// Initialize vertex_pos with current positions so vertices that
@@ -1251,5 +1274,19 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			kernel_update_vertex_pos<<<gridDim, blockDim>>>(cudaDeviceVertices, vertex_pos, numVertices);
 			CUDA_CHECK("update_vertex_pos");
 		}
+		ms_smooth += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 	}
+
+	cudaDeviceSynchronize();
+	double ms_total = std::chrono::duration<double, std::milli>(clk::now() - t_total_begin).count();
+	double ms_phases = ms_color + ms_flip + ms_split + ms_collapse + ms_smooth;
+	std::printf("\n=== Timing (ms) over %u outer iter(s) ===\n", params.num_iters);
+	std::printf("  color    %10.2f  (%5.1f%%)\n", ms_color,    100.0 * ms_color    / ms_total);
+	std::printf("  flip     %10.2f  (%5.1f%%)\n", ms_flip,     100.0 * ms_flip     / ms_total);
+	std::printf("  split    %10.2f  (%5.1f%%)\n", ms_split,    100.0 * ms_split    / ms_total);
+	std::printf("  collapse %10.2f  (%5.1f%%)\n", ms_collapse, 100.0 * ms_collapse / ms_total);
+	std::printf("  smooth   %10.2f  (%5.1f%%)\n", ms_smooth,   100.0 * ms_smooth   / ms_total);
+	std::printf("  -------- ----------\n");
+	std::printf("  measured %10.2f  (%5.1f%%)\n", ms_phases,   100.0 * ms_phases   / ms_total);
+	std::printf("  total    %10.2f  (100.0%%)\n", ms_total);
 }
