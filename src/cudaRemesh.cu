@@ -335,9 +335,7 @@ __global__ void kernel_color_edges_persistent(
 	cg::grid_group grid = cg::this_grid();
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
 
-	// Safety cap: Jones-Plassmann needs O(log n) rounds in practice (~20).
-	// 256 is a generous bound that prevents infinite loops on degenerate meshes.
-	for (int round = 0; round < 256; ++round) {
+	while (true) {
 		// One thread resets the done flag for this round.
 		if (idx == 0) *done = 1;
 		grid.sync();
@@ -437,7 +435,7 @@ __global__ void kernel_color_vertices_persistent(
 	cg::grid_group grid = cg::this_grid();
 	int idx = blockDim.x * blockIdx.x + threadIdx.x;
 
-	for (int round = 0; round < 256; ++round) {
+	while (true) {
 		if (idx == 0) *done = 1;
 		grid.sync();
 
