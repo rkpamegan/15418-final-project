@@ -35,7 +35,7 @@ class CudaRemesher {
         int* vertex_color_mask; // the color of each vertex
         int* vertex_priorities; // random priority for graph coloring
         int* edge_priorities; // random priority for edge graph coloring
-        bool* d_coloring_done; // device flag for coloring convergence
+        int* d_coloring_done; // device flag for coloring convergence (1=done, 0=more work)
 
         void update_mesh();
     public:

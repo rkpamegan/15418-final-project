@@ -5,9 +5,10 @@ CU_FILES = cudaRemesh.cu
 CPP_FILES = main.cpp mesh.cpp test.cpp
 
 
-LDFLAGS = -L/usr/include/c++/11/ -L/usr/local/cuda-11.7/lib64/ -lcudart
+LDFLAGS = -L/usr/include/c++/11/ -L/usr/local/cuda-11.7/lib64/ -lcudart -lcudadevrt
 
-NVCC_FLAGS = -O3 -m64 --gpu-architecture compute_61 -ccbin /usr/bin/g++-11
+# sm_75 = RTX 2080. Cooperative-groups grid.sync() requires sm_60+ and -rdc=true.
+NVCC_FLAGS = -O3 -m64 --gpu-architecture sm_75 -rdc=true -ccbin /usr/bin/g++-11
 NVCC = /usr/local/cuda-11.7/bin/nvcc
 
 CXX_FLAGS = -O3 -Wall -g
@@ -25,7 +26,7 @@ clean:
 	rm -rf $(PROGRAM) $(OBJ_DIR)/*.o
 
 $(PROGRAM): $(CU_OBJS) $(CPP_OBJS)
-	$(CXX) $(CXX_FLAGS) -o $@ $^ $(LDFLAGS)
+	$(NVCC) --gpu-architecture sm_75 -ccbin /usr/bin/g++-11 -o $@ $^ $(LDFLAGS)
 
 $(OBJ_DIR)/%.o: %.cu | $(OBJ_DIR)
 	$(NVCC) $(NVCC_FLAGS) -c $< -o $@
