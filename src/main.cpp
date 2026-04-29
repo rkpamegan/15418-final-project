@@ -165,11 +165,11 @@ int main() {
 	test_collapse_edge();
 	test_converge();
 
-	// Run remesh on smallest dataset to validate full pipeline on a real mesh
-	std::printf("\n=== Loading tests/test3.txt ===\n");
-	Mesh* mesh = mesh_from_file("tests/test3.txt");
+	// Run remesh on test2 dataset (medium scale) to validate at scale
+	std::printf("\n=== Loading tests/test2.txt ===\n");
+	Mesh* mesh = mesh_from_file("tests/test2.txt");
 	if (mesh == nullptr) {
-		std::printf("failed to open tests/test3.txt\n");
+		std::printf("failed to open tests/test2.txt\n");
 		return 1;
 	}
 	std::printf("Loaded mesh: %zu verts, %zu edges, %zu halfedges, %zu faces\n",

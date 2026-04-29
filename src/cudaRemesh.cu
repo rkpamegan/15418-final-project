@@ -18,6 +18,21 @@
 #include "cudaRemesh.h"
 #include "vec3.h"
 
+// Set VERBOSE=1 to re-enable chatty per-element/per-color logging.
+// Per-iteration summaries (avg length, total splits) are always printed.
+// CUDA error reporting is always on; only the [ok @ ...] success spam is gated.
+#ifndef VERBOSE
+#define VERBOSE 0
+#endif
+
+#if VERBOSE
+#define VPRINTF(...) do { std::printf(__VA_ARGS__); std::fflush(stdout); } while(0)
+#define DPRINTF(...) std::printf(__VA_ARGS__)
+#else
+#define VPRINTF(...) do {} while(0)
+#define DPRINTF(...) do {} while(0)
+#endif
+
 #define CUDA_CHECK(label) do { \
 	cudaError_t _s = cudaDeviceSynchronize(); \
 	cudaError_t _l = cudaGetLastError(); \
@@ -26,7 +41,7 @@
 		std::fflush(stdout); \
 		std::abort(); \
 	} else { \
-		std::printf("[ok @ %s]\n", label); std::fflush(stdout); \
+		VPRINTF("[ok @ %s]\n", label); \
 	} \
 } while(0)
 
@@ -81,13 +96,13 @@ void CudaRemesher::setup(Mesh &_mesh) {
 	cudaMalloc(&cudaDeviceEdges, sizeof(Mesh::Edge) * _mesh.edges.size());
 	cudaMalloc(&cudaDeviceHalfedges, sizeof(Mesh::Halfedge) * _mesh.halfedges.size());
 	cudaMalloc(&cudaDeviceFaces, sizeof(Mesh::Face) * _mesh.faces.size());
-	std::printf("malloc'd elements\n");
+	VPRINTF("malloc'd elements\n");
 
 	cudaMemcpy(cudaDeviceVertices, _mesh.vertices.data(), sizeof(Mesh::Vertex) * _mesh.vertices.size(), cudaMemcpyHostToDevice);
 	cudaMemcpy(cudaDeviceEdges, _mesh.edges.data(), sizeof(Mesh::Edge) * _mesh.edges.size(), cudaMemcpyHostToDevice);
 	cudaMemcpy(cudaDeviceHalfedges, _mesh.halfedges.data(), sizeof(Mesh::Halfedge) * _mesh.halfedges.size(), cudaMemcpyHostToDevice);
 	cudaMemcpy(cudaDeviceFaces, _mesh.faces.data(), sizeof(Mesh::Face) * _mesh.faces.size(), cudaMemcpyHostToDevice);
-	std::printf("memcpy elements\n");
+	VPRINTF("memcpy elements\n");
 
 	numVertices = _mesh.vertices.size();
 	numEdges = _mesh.edges.size();
@@ -102,7 +117,7 @@ void CudaRemesher::setup(Mesh &_mesh) {
 	cudaMalloc(&vertex_color_mask, sizeof(int) * numVertices);
 	cudaMalloc(&vertex_pos, sizeof(Vec3) * numVertices);
 	cudaMalloc(&vertex_normals, sizeof(Vec3) * numVertices);
-	std::printf("malloc'd masks\n");
+	VPRINTF("malloc'd masks\n");
 
 	// Generate random priorities for graph coloring
 	std::vector<int> h_priorities(numVertices);
@@ -408,7 +423,7 @@ __global__ void kernel_smooth_vertex(
 	center = v.position + smoothing_factor * (center - v.position);
 	Vec3 normal = vertex_normals[index];
 	center = center - dot(normal, center) * normal;
-	std::printf("vertex %d: (%f %f %f) -> (%f %f %f)\n", index, v.position.x, v.position.y, v.position.z, center.x, center.y, center.z);
+	DPRINTF("vertex %d: (%f %f %f) -> (%f %f %f)\n", index, v.position.x, v.position.y, v.position.z, center.x, center.y, center.z);
 	vertex_pos[index] = center;
 }
 
@@ -610,7 +625,7 @@ __global__ void kernel_get_edge_lengths(
 
 	float length = std::sqrt(dx * dx + dy * dy + dz * dz);
 	lengths[index] = length;
-	std::printf("edge %d is length %f\n", index, length);
+	DPRINTF("edge %d is length %f\n", index, length);
 }
 
 /**
@@ -798,9 +813,9 @@ __global__ void kernel_get_split_edges(
 	if (faces[halfedges[h_idx].face_idx].boundary) return;
 	if (faces[halfedges[t_idx].face_idx].boundary) return;
 
-	std::printf("edge %u: length = %f, cmp = %f\n", index, lengths[index], avg_len * split_factor);
+	DPRINTF("edge %u: length = %f, cmp = %f\n", index, lengths[index], avg_len * split_factor);
 	op_mask[index] = lengths[index] > avg_len * split_factor;
-	if (op_mask[index]) std::printf("edge %u should be split\n", index);
+	if (op_mask[index]) DPRINTF("edge %u should be split\n", index);
 }
 
 /**
@@ -1044,7 +1059,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		kernel_get_flip_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_op_mask);
 		CUDA_CHECK("get_flip_edges");
 		for (int c = 0; c <= max_color; c++) {
-			std::printf("Flipping edges of color %d\n", c);
+			VPRINTF("Flipping edges of color %d\n", c);
 			// flips all edges with color c if flipping them increases regular-ness
 			kernel_flip_edge<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_color_mask, edge_op_mask, c);
 			CUDA_CHECK("flip_edge");
@@ -1116,7 +1131,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 
 			for (int c = 0; c <= max_color; c++) {
-				std::printf("Splitting edges of color %d\n", c);
+				VPRINTF("Splitting edges of color %d\n", c);
 				kernel_split_edge<<<gridDim, blockDim>>>(
 					cudaDeviceVertices, cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces,
 					edge_color_mask, edge_op_mask, split_offsets,
@@ -1189,7 +1204,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 
 		for (int c = 0; c <= max_color; c++) {
-			std::printf("Collapsing edges of color %d\n", c);
+			VPRINTF("Collapsing edges of color %d\n", c);
 			kernel_collapse_edge<<<gridDim, blockDim>>>(
 				cudaDeviceVertices, cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces,
 				edge_color_mask, edge_op_mask, numEdges, c);
@@ -1212,7 +1227,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		CUDA_CHECK("max_element_v");
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 		for (int i = 0; i < params.smoothing_iters; i++) {
-			std::printf("iteration %d of vertex smoothing\n", i);
+			VPRINTF("iteration %d of vertex smoothing\n", i);
 			// Initialize vertex_pos with current positions so vertices that
 			// don't get smoothed (invalid, isolated, count==0) don't get
 			// uninitialized garbage copied back by update_vertex_pos.
@@ -1226,7 +1241,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			CUDA_CHECK("get_vertex_normals");
 			for (int c = 0; c <= max_color; c++) {
 				// smooth all vertices of each color
-				std::printf("Smoothing vertices of color %d\n", c);
+				VPRINTF("Smoothing vertices of color %d\n", c);
 				kernel_smooth_vertex<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceEdges,
 					cudaDeviceHalfedges, cudaDeviceFaces, vertex_color_mask, vertex_normals, vertex_pos,
 					numVertices, numEdges, numHalfedges, numFaces, params.smoothing_step, c);
