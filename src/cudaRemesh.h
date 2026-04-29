@@ -8,6 +8,7 @@ struct Isotropic_Remesh_Params {
     float collapse_factor; //edges shorter than shorter_factor * target_length are collapsed
     uint32_t smoothing_iters; //how many tangential smoothing iterations to run
     float smoothing_step; //amount to interpolate vertex positions toward their centroid each smoothing step
+    uint32_t block_size = 256; //CUDA threads per block
 };
 
 class CudaRemesher {

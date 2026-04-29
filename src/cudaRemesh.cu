@@ -1045,7 +1045,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 
 	for (int t = 0; t < params.num_iters; t++) {
 		std::printf("iteration %d of remeshing\n", t);
-		blockDim = dim3(256);
+		blockDim = dim3(params.block_size);
 		gridDim = dim3((numEdges + blockDim.x - 1 ) / blockDim.x);
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
 		bool h_done = false;
