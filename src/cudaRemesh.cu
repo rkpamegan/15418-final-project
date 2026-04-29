@@ -76,11 +76,6 @@ CudaRemesher::~CudaRemesher() {
 		cudaFree(cudaDeviceHalfedges);
 		cudaFree(cudaDeviceFaces);
 
-		cudaFree((void**) &numVertices);
-		cudaFree((void**) &numEdges);
-		cudaFree((void**) &numHalfedges);
-		cudaFree((void**) &numFaces);
-
 		cudaFree(edge_lengths);
 		cudaFree(edge_color_mask);
 		cudaFree(edge_op_mask);
