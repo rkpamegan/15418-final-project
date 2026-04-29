@@ -1,10 +1,20 @@
 #pragma once 
 
 #include <vector>
+#include <optional>
 #include <stdint.h>
 #include "mathlib.h"
 
 #define INVALID_IDX UINT32_MAX
+
+//improve mesh quality via isotropic remeshing
+struct Isotropic_Remesh_Params {
+    uint32_t num_iters; //how many outer loops through the remeshing process to take
+    float split_factor; //edges longer than longer_factor * target_length are split
+    float collapse_factor; //edges shorter than shorter_factor * target_length are collapsed
+    uint32_t smoothing_iters; //how many tangential smoothing iterations to run
+    float smoothing_step; //amount to interpolate vertex positions toward their centroid each smoothing step
+};
 
 class Mesh {
 public:
@@ -86,6 +96,20 @@ public:
     std::vector<Halfedge> halfedges;
     std::vector<Face> faces;
 
+    // remesh functions
+    uint32_t vertex_degree(uint32_t v);
+    float edge_length(uint32_t e);
+    void flip_edge(uint32_t e);
+    void flip_edges();
+    void split_edge(uint32_t e);
+    void split_edges(float avg_len, float split_factor);
+    uint32_t collapse_edge(uint32_t e);
+    void collapse_edges(float avg_len, float collapse_factor);
+    void smooth_vertices(std::vector<Vec3>& vertex_pos, std::vector<Vec3>& vertex_normals, float smoothing_factor);
+    void get_vertex_normals(std::vector<Vec3>& vertex_normals);
+    void update_vertex_pos(std::vector<Vec3>& vertex_pos);
+    void isotropic_remesh(Isotropic_Remesh_Params const &params);
+
     /**
      * Create a mesh from a list of vertices and a list of polygons composed of the vertices.
      * Vertices for each face MUST be specified in counter-clockwise order
@@ -93,7 +117,7 @@ public:
 
     static Mesh from_indexed_faces(std::vector< Vec3 > const &vertices_,  
         std::vector< std::vector< uint32_t > > const &faces_);
-    // bool validate() const;
+    std::optional<std::pair<uint32_t, std::string>> validate() const;
     void describe() const;
     Mesh() = default;
     ~Mesh() = default;

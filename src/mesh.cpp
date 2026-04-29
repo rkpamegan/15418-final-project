@@ -8,10 +8,12 @@
 #include "vec3.h"
 
 #include <unordered_map>
+#include <unordered_set>
 #include <set>
 #include <map>
 
 #include <iostream>
+#include <optional>
 
 std::ostream& operator << (std::ostream& outs, const Mesh::Vertex& v);
 std::ostream& operator << (std::ostream& outs, const Mesh::Edge& e);
@@ -161,6 +163,223 @@ Mesh Mesh::from_indexed_faces(std::vector< Vec3 > const &vertices_,
 	*/
 
 	return mesh;
+}
+
+std::optional<std::pair<uint32_t, std::string>> Mesh::validate() const {
+
+	//helpers for error messages:
+	auto describe_vertex   = [this](uint32_t idx)   { return "Vertex with id " + std::to_string(vertices[idx].id); };
+	auto describe_edge     = [this](uint32_t idx)     { return "Edge with id " + std::to_string(edges[idx].id); };
+	auto describe_face     = [this](uint32_t idx)     { return "Face with id " + std::to_string(faces[idx].id); };
+	auto describe_halfedge = [this](uint32_t idx) { return "Halfedge with id " + std::to_string(halfedges[idx].id); };
+
+
+	//-----------------------------
+	//check element data:
+	for (uint32_t i = 0; i < vertices.size(); i++) {
+		if (!std::isfinite(vertices[i].position.x)) return {{i, describe_vertex(i) + " has position.x set to a non-finite value: " + std::to_string(vertices[i].position.x) + "."}};
+		if (!std::isfinite(vertices[i].position.y)) return {{i, describe_vertex(i) + " has position.y set to a non-finite value: " + std::to_string(vertices[i].position.y) + "."}};
+		if (!std::isfinite(vertices[i].position.z)) return {{i, describe_vertex(i) + " has position.z set to a non-finite value: " + std::to_string(vertices[i].position.z) + "."}};
+	}
+
+	// NOTE: removed edge, face, halfedge data checks since we don't use that data
+
+
+	//-----------------------------
+	//all references held by elements are to members of the vertices, edges, faces, or halfedges lists
+
+	// //for checking whether a reference is held in a given list:
+	// std::unordered_set< Vertex const * > in_vertices = element_addresses(vertices);
+	// std::unordered_set< Edge const * > in_edges = element_addresses(edges);
+	// std::unordered_set< Face const * > in_faces = element_addresses(faces);
+	// std::unordered_set< Halfedge const * > in_halfedges = element_addresses(halfedges);
+
+	// //helpers for describing things that aren't in the element lists:
+	// std::unordered_set< Vertex const * > in_free_vertices = element_addresses(free_vertices);
+	// std::unordered_set< Edge const * > in_free_edges = element_addresses(free_edges);
+	// std::unordered_set< Face const * > in_free_faces = element_addresses(free_faces);
+	// std::unordered_set< Halfedge const * > in_free_halfedges = element_addresses(free_halfedges);
+
+	// auto describe_missing_vertex = [this,&in_free_vertices](uint32_t) -> std::string {
+	// 	if (v == vertices.end()) return "past-the-end vertex";
+	// 	else if (in_free_vertices.count(&*v)) return "erased vertex with old id " + std::to_string(v->id & 0x7fffffffu);
+	// 	else return "out-of-mesh vertex with address " + to_string(&*v);
+	// };
+
+	// auto describe_missing_edge = [this,&in_free_edges](EdgeCRef e) -> std::string {
+	// 	if (e == edges.end()) return "past-the-end edge";
+	// 	else if (in_free_edges.count(&*e)) return "erased edge with old id " + std::to_string(e->id & 0x7fffffffu);
+	// 	else return "out-of-mesh edge with address " + to_string(&*e);
+	// };
+
+	// auto describe_missing_face = [this,&in_free_faces](FaceCRef f) -> std::string {
+	// 	if (f == faces.end()) return "past-the-end face";
+	// 	else if (in_free_faces.count(&*f)) return "erased face with old id " + std::to_string(f->id & 0x7fffffffu);
+	// 	else return "out-of-mesh face with address " + to_string(&*f);
+	// };
+
+	// auto describe_missing_halfedge = [this,&in_free_halfedges](HalfedgeCRef h) -> std::string {
+	// 	if (h == halfedges.end()) return "past-the-end halfedge";
+	// 	else if (in_free_halfedges.count(&*h)) return "erased halfedge with old id " + std::to_string(h->id & 0x7fffffffu);
+	// 	else return "out-of-mesh halfedge with address " + to_string(&*h);
+	// };
+
+	//check references made by vertices:
+	for (uint32_t i = 0; i < vertices.size(); i++) {
+		uint32_t h_idx = vertices[i].halfedge_idx;
+		if (!(0 <= h_idx && h_idx < halfedges.size())) return {{i, describe_vertex(i) + " references halfedge with index " + std::to_string(h_idx) + "."}};
+	}
+
+	//check references made by edges:
+	for (uint32_t i = 0; i < edges.size(); i++) {
+		uint32_t h_idx = edges[i].halfedge_idx;
+		if (!(0 <= h_idx && h_idx < halfedges.size())) return {{i, describe_edge(i) + " references halfedge with index " + std::to_string(h_idx) + "."}};
+	}
+
+	//check references made by faces:
+	for (uint32_t i = 0; i < faces.size(); i++) {
+		uint32_t h_idx = faces[i].halfedge_idx;
+		if (!(0 <= h_idx && h_idx < halfedges.size())) return {{i, describe_face(i) + " references halfedge with index " + std::to_string(h_idx) + "."}};
+	}
+
+	//check references made by halfedges:
+	for (uint32_t i = 0; i < halfedges.size(); i++) {
+		uint32_t t_idx = halfedges[i].twin_idx;
+		if (!(0 <= t_idx && t_idx < halfedges.size())) return {{i, describe_halfedge(i) + " references halfedge with index " + std::to_string(t_idx) + "."}};
+
+		uint32_t n_idx = halfedges[i].next_idx;
+		if (!(0 <= n_idx && n_idx < halfedges.size())) return {{i, describe_halfedge(i) + " references halfedge with index " + std::to_string(n_idx) + "."}};
+
+		uint32_t v_idx = halfedges[i].vertex_idx;
+		if (!(0 <= v_idx && v_idx < vertices.size())) return {{i, describe_halfedge(i) + " references vertex with index " + std::to_string(v_idx) + "."}};
+
+		uint32_t e_idx = halfedges[i].edge_idx;
+		if (!(0 <= e_idx && e_idx < edges.size())) return {{i, describe_halfedge(i) + " references edge with index " + std::to_string(e_idx) + "."}};
+
+		uint32_t f_idx = halfedges[i].face_idx;
+		if (!(0 <= f_idx && f_idx < faces.size())) return {{i, describe_halfedge(i) + " references face with index " + std::to_string(f_idx) + "."}};
+	}
+
+	//------------------------------
+	// - `edge->halfedge(->twin)^n` is a cycle of two halfedges
+	//   - this is also exactly the set of halfedges that reference `edge`
+	// - `face->halfedge(->next)^n` is a cycle of at least three halfedges
+	//   - this is also exactly the set of halfedges that reference `face`
+	// - `vertex->halfedge(->twin->next)^n` is a cycle of at least two halfedges
+	//   - this is also exactly the set of halfedges that reference `vertex`
+
+	//first, build list of all halfedges that reference every other feature:
+	// maps vertex/edge/face index to set of halfedge indices
+	std::unordered_map< uint32_t, std::unordered_set< uint32_t > > vertex_halfedges;
+	std::unordered_map< uint32_t, std::unordered_set< uint32_t > > edge_halfedges;
+	std::unordered_map< uint32_t, std::unordered_set< uint32_t > > face_halfedges;
+	for (uint32_t h = 0; h < halfedges.size(); h++) {
+		auto vret = vertex_halfedges[halfedges[h].vertex_idx].emplace(h);
+		assert(vret.second); //every halfedge is unique, so emplace can't fail
+		auto eret = edge_halfedges[halfedges[h].edge_idx].emplace(h);
+		assert(eret.second); //every halfedge is unique, so emplace can't fail
+		auto fret = face_halfedges[halfedges[h].face_idx].emplace(h);
+		assert(fret.second); //every halfedge is unique, so emplace can't fail
+	}
+
+	//check edge->halfedge(->twin)^n:
+	for (uint32_t e = 0; e < edges.size(); e++) {
+		std::unordered_set< uint32_t > to_visit = edge_halfedges[e];
+		std::string path = "halfedge";
+		uint32_t h = edges[e].halfedge_idx;
+		do {
+			if (halfedges[h].edge_idx != e) return {{e, describe_edge(e) + " has " + path + " of " + describe_halfedge(h) + ", which does not reference the edge."}};
+			auto found = to_visit.find(h);
+			if (found == to_visit.end()) return {{e, describe_edge(e) + " has halfedge(->twin)^n which is not a cycle."}};
+			to_visit.erase(found);
+
+			h = halfedges[h].twin_idx;
+			path += "->twin";
+		} while (h != edges[e].halfedge_idx);
+		if (!to_visit.empty()) return {{e, describe_edge(e) + " is referenced by " + describe_halfedge(*to_visit.begin()) + ", which is not in halfedge(->twin)^n."}};
+		if (edge_halfedges[e].size() != 2) return {{e, describe_edge(e) + " has " + std::to_string(edge_halfedges[e].size()) + " (!= 2) elements in its halfedge(->twin)^n cycle."}};
+	}
+
+	//check face->halfedge(->next)^n:
+	for (uint32_t f = 0; f < faces.size(); f++) {
+		std::unordered_set< uint32_t > to_visit = face_halfedges[f];
+		std::string path = "halfedge";
+		uint32_t h = faces[f].halfedge_idx;
+		do {
+			if (halfedges[h].face_idx != f) return {{f, describe_face(f) + " has " + path + " of " + describe_halfedge(h) + ", which does not reference the face."}};
+			auto found = to_visit.find(h);
+			if (found == to_visit.end()) return {{f, describe_face(f) + " has halfedge(->next)^n which is not a cycle."}};
+			to_visit.erase(found);
+
+			h = halfedges[h].next_idx;
+			path += "->next";
+		} while (h != faces[f].halfedge_idx);
+		if (!to_visit.empty()) return {{f, describe_face(f) + " is referenced by " + describe_halfedge(*to_visit.begin()) + ", which is not in halfedge(->next)^n."}};
+		if (face_halfedges[f].size() < 3) return {{f, describe_face(f) + " has " + std::to_string(face_halfedges[f].size()) + " (< 3) elements in its halfedge(->next)^n cycle."}};
+	}
+
+	//check vertex->halfedge(->twin->next)^n:
+	for (uint32_t v = 0; v < vertices.size(); v++) {
+		std::unordered_set< uint32_t > to_visit = vertex_halfedges[v];
+		std::string path = "halfedge";
+		uint32_t h = vertices[v].halfedge_idx;
+		do {
+			if (halfedges[h].vertex_idx != v) return {{v, describe_vertex(v) + " has " + path + " of " + describe_halfedge(h) + ", which does not reference the vertex."}};
+			auto found = to_visit.find(h);
+			if (found == to_visit.end()) return {{v, describe_vertex(v) + " has halfedge(->twin->next)^n which is not a cycle."}};
+			to_visit.erase(found);
+
+			h = halfedges[halfedges[h].twin_idx].next_idx;
+			path += "->twin->next";
+		} while (h != vertices[v].halfedge_idx);
+		if (!to_visit.empty()) return {{v, describe_vertex(v) + " is referenced by " + describe_halfedge(*to_visit.begin()) + ", which is not in halfedge(->twin->next)^n."}};
+		if (vertex_halfedges[v].size() < 2) return {{v, describe_vertex(v) + " has " + std::to_string(vertex_halfedges[v].size()) + " (< 2) elements in its halfedge(->twin->next)^n cycle."}};
+	}
+
+	//------------------------------
+	// - vertices are not orphaned (they have at least one non-boundary face adjacent)
+	// - vertices are on at most one boundary face
+
+	for (uint32_t v = 0; v < vertices.size(); v++) {
+		uint32_t non_boundary = 0;
+		uint32_t boundary = 0;
+		uint32_t h = vertices[v].halfedge_idx;
+		do {
+			if (faces[halfedges[h].face_idx].boundary) ++boundary;
+			else ++non_boundary;
+
+			h = halfedges[halfedges[h].twin_idx].next_idx;
+		} while (h != vertices[v].halfedge_idx);
+
+		if (non_boundary == 0) return {{v, describe_vertex(v) + " is orphaned (has no adjacent non-boundary faces)."}};
+		if (boundary > 1) return {{v, describe_vertex(v) + " is on " + std::to_string(boundary) + " (> 1) boundary faces."}};
+	}
+
+	//------------------------------
+	// - edges are not orphaned (they have at least one non-boundary face adjacent)
+	for (uint32_t e = 0; e != edges.size(); e++) {
+		if (faces[halfedges[edges[e].halfedge_idx].face_idx].boundary && 
+				faces[halfedges[halfedges[edges[e].halfedge_idx].twin_idx].face_idx].boundary)
+			return {{e, describe_edge(e) + " is orphaned (has no adjacent non-boundary face)."}};
+	}
+
+
+	//------------------------------
+	// - faces are simple (touch each vertex / edge at most once)
+	for (uint32_t f = 0; f < faces.size(); f++) {
+		std::unordered_set< uint32_t > touched_vertices;
+		std::unordered_set< uint32_t > touched_edges;
+
+		uint32_t h = faces[f].halfedge_idx;
+		do {
+			if (!touched_vertices.emplace(halfedges[h].vertex_idx).second) return {{f, describe_face(f) + " touches " + describe_vertex(halfedges[h].vertex_idx) + " more than once."}};
+			if (!touched_edges.emplace(halfedges[h].edge_idx).second) return {{f, describe_face(f) + " touches " + describe_edge(halfedges[h].edge_idx) + " more than once."}};
+
+			h = halfedges[h].next_idx;
+		} while (h != faces[f].halfedge_idx);
+	}
+
+	return std::nullopt;
 }
 
 uint32_t Mesh::emplace_vertex() {

@@ -1006,20 +1006,17 @@ __global__ void kernel_split_edge(
 }
 
 //isotropic_remesh: improves mesh quality through local operations.
-// Do note that this requires a working implementation of EdgeSplit, EdgeFlip, and EdgeCollapse
 void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 	dim3 blockDim;
 	dim3 gridDim;
 
-	// Compute the mean edge length. This will be the "target length".
-
 	/**
 	 * 	1. 	Color mesh vertices such that no two adjacent vertices have the same color
 	 * 	2. 	Color mesh edges such that no two edges which share an incident vertex have the same color
-	 * 	3. 	For each edge color c_e}:
+	 * 	3. 	For each edge color c_e:
 	 * 		a. 	For each edge with color c_e:
 	 * 			i. 	Split edges much longer than the target length.
-	 * 				("much longer" means > target length * params.longer_factor)
+	 * 				("much longer" means > target length * params.split_factor)
 	 * 			ii.	Collapse edges much shorter than the target length.
 	 *	4.	For each color c_v:
 	 *		a. 	For each vertex of color c_v:
@@ -1036,7 +1033,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 	//      lists they are looping over. Take care to avoid use-after-free
 	//      or infinite-loop problems.
 
-	for (int t = 0; t < params.num_iters; t++) {
+	for (uint32_t t = 0; t < params.num_iters; t++) {
 		std::printf("iteration %d of remeshing\n", t);
 		blockDim = dim3(256);
 		gridDim = dim3((numEdges + blockDim.x - 1 ) / blockDim.x);
@@ -1227,7 +1224,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		cuda_max_color = thrust::max_element(thrust::device, vertex_color_mask, vertex_color_mask + numVertices);
 		CUDA_CHECK("max_element_v");
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
-		for (int i = 0; i < params.smoothing_iters; i++) {
+		for (uint32_t i = 0; i < params.smoothing_iters; i++) {
 			std::printf("iteration %d of vertex smoothing\n", i);
 			// Initialize vertex_pos with current positions so vertices that
 			// don't get smoothed (invalid, isolated, count==0) don't get

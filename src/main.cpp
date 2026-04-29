@@ -134,10 +134,10 @@ void help()
 {
 	printf("Usage: ./remesh [options] meshfile\n");
 	printf("Options:\n");
-	printf("\t-r seq/par	Remesher type: `seq` for sequential, `par` for parallel (CUDA)\n");
-	printf("\t-b t			CUDA block size of `t`, i.e. t threads per block\n");
-	printf("\t-o filename	Output mesh description to filename\n");
-	printf("")
+	printf("\t-r seq/par		Remesher type: `seq` for sequential, `par` for parallel (CUDA)\n");
+	printf("\t-b t				CUDA block size of `t`, i.e. t threads per block\n");
+	printf("\t-o filename		Output mesh description to filename\n");
+	printf("\t-v				Verbose output\n");
 }
 
 int main(int argc, char* argv[]) {
@@ -153,7 +153,7 @@ int main(int argc, char* argv[]) {
 				break;
 			case 'h':
 				help();
-				exit();
+				exit(1);
 				break;
 			case 'b':
 				break;
@@ -166,13 +166,21 @@ int main(int argc, char* argv[]) {
 	}
     CudaRemesher* remesher = new CudaRemesher();
 	Mesh* mesh = mesh_from_file("tests/test2.txt");
-
+	std::optional<std::pair<uint32_t, std::string>> res; 
+	if ((res =mesh->validate()) != std::nullopt) {
+		std::printf("could not validate mesh before remesh: %s\n", res.value().second );
+		return 1;
+	}
     remesher->setup(*mesh);
 	Isotropic_Remesh_Params params{
 		1, 1.5f, 0.5f, 1, 1.0f
 	};
-	mesh->describe();
+	// mesh->describe();
 	remesher->isotropic_remesh(params);
+	if ((res = mesh->validate()) != std::nullopt) {
+		std::printf("could not validate mesh after remesh: %s\n", res.value().second);
+		return 1;
+	}
 	// test_converge();
 
 	free(mesh);
