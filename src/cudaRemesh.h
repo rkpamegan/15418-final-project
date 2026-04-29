@@ -11,6 +11,8 @@ struct Isotropic_Remesh_Params {
     uint32_t block_size = 256; //CUDA threads per block
 };
 
+void cuda_clear_last_error();
+
 class CudaRemesher {
     private:
         Mesh* mesh; // the mesh to be remeshed

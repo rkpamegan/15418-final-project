@@ -1,7 +1,6 @@
 #include "mesh.h"
 #include "cudaRemesh.h"
 
-#include <cuda_runtime.h>
 #include <stdio.h>
 #include <iostream>
 #include <fstream>
@@ -188,7 +187,7 @@ int main() {
 	std::printf("\n=== Speedup Test: varying block_size on tests/test1.txt ===\n");
 	std::printf("%-12s %12s\n", "block_size", "total_ms");
 	// Clear any stale CUDA error left by previous destructors before entering the loop
-	cudaGetLastError();
+	cuda_clear_last_error();
 	uint32_t block_sizes[] = {32, 64, 128, 256, 512, 1024};
 	for (uint32_t bs : block_sizes) {
 		Mesh* m = mesh_from_file("tests/test1.txt");

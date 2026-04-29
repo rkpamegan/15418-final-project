@@ -46,6 +46,8 @@
 	} \
 } while(0)
 
+void cuda_clear_last_error() { cudaGetLastError(); }
+
 CudaRemesher::CudaRemesher() {
 	cudaDeviceVertices = NULL;
 	cudaDeviceHalfedges = NULL;
