@@ -20,8 +20,6 @@
 #include "vec3.h"
 
 // Set VERBOSE=1 to re-enable chatty per-element/per-color logging.
-// Per-iteration summaries (avg length, total splits) are always printed.
-// CUDA error reporting is always on; only the [ok @ ...] success spam is gated.
 #ifndef VERBOSE
 #define VERBOSE 0
 #endif
@@ -117,26 +115,19 @@ void CudaRemesher::setup(Mesh &_mesh) {
 	cudaMalloc(&vertex_normals, sizeof(Vec3) * numVertices);
 	VPRINTF("malloc'd masks\n");
 
-	// Generate random priorities for graph coloring
 	std::vector<int> h_priorities(numVertices);
-	for (uint32_t i = 0; i < numVertices; i++) {
-		h_priorities[i] = rand();
-	}
+	for (uint32_t i = 0; i < numVertices; i++) h_priorities[i] = rand();
 	cudaMalloc(&vertex_priorities, sizeof(int) * numVertices);
 	cudaMemcpy(vertex_priorities, h_priorities.data(), sizeof(int) * numVertices, cudaMemcpyHostToDevice);
 
-	// Generate random priorities for edge coloring
 	std::vector<int> h_edge_priorities(numEdges);
-	for (uint32_t i = 0; i < numEdges; i++) {
-		h_edge_priorities[i] = rand();
-	}
+	for (uint32_t i = 0; i < numEdges; i++) h_edge_priorities[i] = rand();
 	cudaMalloc(&edge_priorities, sizeof(int) * numEdges);
 	cudaMemcpy(edge_priorities, h_edge_priorities.data(), sizeof(int) * numEdges, cudaMemcpyHostToDevice);
 
 	cudaMalloc(&d_coloring_done, sizeof(bool));
 }
 
-// Updates mesh fields to the remeshed values
 void CudaRemesher::update_mesh() {
 	mesh->vertices.resize(numVertices);
 	mesh->edges.resize(numEdges);
@@ -149,146 +140,86 @@ void CudaRemesher::update_mesh() {
 	cudaMemcpy(mesh->faces.data(), cudaDeviceFaces, sizeof(Mesh::Face) * numFaces, cudaMemcpyDeviceToHost);
 }
 
-/**
- * Ideas for graph coloring:
- * 	Jones-Plassmann parallel graph coloring:
- * 	Each vertex has a random priority. Each round, a vertex colors itself
- * 	only if it has the highest priority among all its uncolored neighbors.
- * 	It picks the smallest color not used by any already-colored neighbor.
- */ 
+// Grid-stride loop pattern: each thread processes multiple elements when
+// total threads < N.  The do{}while(0) wrapper lets us use break instead of
+// return for early exits inside the loop body.
+
 __global__ void kernel_color_vertices(
 	Mesh::Vertex* vertices, Mesh::Halfedge* halfedges,
 	uint32_t num_vertices, int* color_mask, int* priorities, bool* done)
 {
-	int idx = blockDim.x * blockIdx.x + threadIdx.x;
-	if (idx >= num_vertices) return;
-	if (color_mask[idx] != -1) return; // already colored
+	for (int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	     (uint32_t)idx < num_vertices;
+	     idx += blockDim.x * gridDim.x)
+	{ do {
+		if (color_mask[idx] != -1) break;
 
-	// Check if this vertex has higher priority than all uncolored neighbors
-	bool is_local_max = true;
-	// Track which colors are used by colored neighbors (bitmask, supports up to 32 colors)
-	uint32_t used_colors = 0;
+		bool is_local_max = true;
+		uint32_t used_colors = 0;
 
-	// Walk around the vertex using halfedges to find all neighbors
-	uint32_t start_he = vertices[idx].halfedge_idx;
-	if (start_he == INVALID_IDX) {
-		color_mask[idx] = 0; // isolated vertex
-		return;
-	}
-	// If our start_he was invalidated by a previous collapse, treat as isolated.
-	if (halfedges[start_he].vertex_idx == INVALID_IDX) {
-		color_mask[idx] = 0;
-		return;
-	}
+		uint32_t start_he = vertices[idx].halfedge_idx;
+		if (start_he == INVALID_IDX) { color_mask[idx] = 0; break; }
+		if (halfedges[start_he].vertex_idx == INVALID_IDX) { color_mask[idx] = 0; break; }
 
-	uint32_t he = start_he;
-	int guard = 0;
-	do {
-		// he goes out from vertex idx, twin goes back, twin->next goes out from neighbor
-		uint32_t twin_he = halfedges[he].twin_idx;
-		if (twin_he == INVALID_IDX) break;
-
-		uint32_t neighbor = halfedges[twin_he].vertex_idx;
-		if (neighbor == INVALID_IDX) break;
-
-		if (color_mask[neighbor] == -1) {
-			// neighbor is uncolored — check priority
-			if (priorities[neighbor] > priorities[idx]) {
-				is_local_max = false;
-				break;
+		uint32_t he = start_he;
+		int guard = 0;
+		do {
+			uint32_t twin_he = halfedges[he].twin_idx;
+			if (twin_he == INVALID_IDX) break;
+			uint32_t neighbor = halfedges[twin_he].vertex_idx;
+			if (neighbor == INVALID_IDX) break;
+			if (color_mask[neighbor] == -1) {
+				if (priorities[neighbor] > priorities[idx]) { is_local_max = false; break; }
+				if (priorities[neighbor] == priorities[idx] && neighbor > (uint32_t)idx) { is_local_max = false; break; }
+			} else {
+				if (color_mask[neighbor] < 32) used_colors |= (1u << color_mask[neighbor]);
 			}
-			// tie-break by index
-			if (priorities[neighbor] == priorities[idx] && neighbor > idx) {
-				is_local_max = false;
-				break;
-			}
+			he = halfedges[twin_he].next_idx;
+			if (he == INVALID_IDX) break;
+			if (++guard > 1024) break;
+		} while (he != start_he);
+
+		if (is_local_max) {
+			int color = 0;
+			while (used_colors & (1u << color)) color++;
+			color_mask[idx] = color;
 		} else {
-			// neighbor is colored — record its color
-			if (color_mask[neighbor] < 32) {
-				used_colors |= (1u << color_mask[neighbor]);
-			}
+			*done = false;
 		}
-
-		// move to next outgoing halfedge around vertex
-		he = halfedges[twin_he].next_idx;
-		if (he == INVALID_IDX) break;
-		if (++guard > 1024) break;
-	} while (he != start_he);
-
-	if (is_local_max) {
-		// pick smallest color not used by neighbors
-		int color = 0;
-		while (used_colors & (1u << color)) color++;
-		color_mask[idx] = color;
-	} else {
-		*done = false; // still have uncolored vertices
-	}
+	} while(0); }
 }
+
 __global__ void kernel_color_edges(
 	Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Vertex* vertices,
 	uint32_t num_edges, int* color_mask, int* priorities, bool* done)
 {
-	int idx = blockDim.x * blockIdx.x + threadIdx.x;
-	if (idx >= num_edges) return;
-	if (color_mask[idx] != -1) return; // already colored
+	for (int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	     (uint32_t)idx < num_edges;
+	     idx += blockDim.x * gridDim.x)
+	{ do {
+		if (color_mask[idx] != -1) break;
 
-	bool is_local_max = true;
-	uint32_t used_colors = 0;
+		bool is_local_max = true;
+		uint32_t used_colors = 0;
 
-	// An edge has two endpoints. Find all edges incident to each endpoint.
-	uint32_t h_idx = edges[idx].halfedge_idx;
-	if (h_idx == INVALID_IDX) {
-		color_mask[idx] = 0;
-		return;
-	}
+		uint32_t h_idx = edges[idx].halfedge_idx;
+		if (h_idx == INVALID_IDX) { color_mask[idx] = 0; break; }
 
-	// Two endpoints of this edge
-	uint32_t v1 = halfedges[h_idx].vertex_idx;
-	uint32_t twin_idx = halfedges[h_idx].twin_idx;
-	uint32_t v2 = (twin_idx != INVALID_IDX) ? halfedges[twin_idx].vertex_idx : INVALID_IDX;
-	if (v1 == INVALID_IDX) {
-		color_mask[idx] = 0;
-		return;
-	}
+		uint32_t v1 = halfedges[h_idx].vertex_idx;
+		uint32_t twin_idx = halfedges[h_idx].twin_idx;
+		uint32_t v2 = (twin_idx != INVALID_IDX) ? halfedges[twin_idx].vertex_idx : INVALID_IDX;
+		if (v1 == INVALID_IDX) { color_mask[idx] = 0; break; }
 
-	// Walk around v1 to find all incident edges (adjacent to this edge)
-	uint32_t start_he = vertices[v1].halfedge_idx;
-	if (start_he != INVALID_IDX && halfedges[start_he].vertex_idx != INVALID_IDX) {
-		uint32_t he = start_he;
-		int guard1 = 0;
-		do {
-			uint32_t neighbor_edge = halfedges[he].edge_idx;
-			if (neighbor_edge != idx && neighbor_edge != INVALID_IDX) {
-				if (color_mask[neighbor_edge] == -1) {
-					if (priorities[neighbor_edge] > priorities[idx] ||
-						(priorities[neighbor_edge] == priorities[idx] && neighbor_edge > idx)) {
-						is_local_max = false;
-						break;
-					}
-				} else if (color_mask[neighbor_edge] < 32) {
-					used_colors |= (1u << color_mask[neighbor_edge]);
-				}
-			}
-			uint32_t tw = halfedges[he].twin_idx;
-			if (tw == INVALID_IDX) break;
-			he = halfedges[tw].next_idx;
-			if (he == INVALID_IDX) break;
-			if (++guard1 > 1024) break;
-		} while (he != start_he);
-	}
-
-	// Walk around v2 to find all incident edges
-	if (is_local_max && v2 != INVALID_IDX) {
-		start_he = vertices[v2].halfedge_idx;
+		uint32_t start_he = vertices[v1].halfedge_idx;
 		if (start_he != INVALID_IDX && halfedges[start_he].vertex_idx != INVALID_IDX) {
 			uint32_t he = start_he;
-			int guard2 = 0;
+			int guard1 = 0;
 			do {
 				uint32_t neighbor_edge = halfedges[he].edge_idx;
-				if (neighbor_edge != idx && neighbor_edge != INVALID_IDX) {
+				if (neighbor_edge != (uint32_t)idx && neighbor_edge != INVALID_IDX) {
 					if (color_mask[neighbor_edge] == -1) {
 						if (priorities[neighbor_edge] > priorities[idx] ||
-							(priorities[neighbor_edge] == priorities[idx] && neighbor_edge > idx)) {
+							(priorities[neighbor_edge] == priorities[idx] && neighbor_edge > (uint32_t)idx)) {
 							is_local_max = false;
 							break;
 						}
@@ -300,28 +231,47 @@ __global__ void kernel_color_edges(
 				if (tw == INVALID_IDX) break;
 				he = halfedges[tw].next_idx;
 				if (he == INVALID_IDX) break;
-				if (++guard2 > 1024) break;
+				if (++guard1 > 1024) break;
 			} while (he != start_he);
 		}
-	}
 
-	if (is_local_max) {
-		int color = 0;
-		while (used_colors & (1u << color)) color++;
-		color_mask[idx] = color;
-	} else {
-		*done = false;
-	}
+		if (is_local_max && v2 != INVALID_IDX) {
+			start_he = vertices[v2].halfedge_idx;
+			if (start_he != INVALID_IDX && halfedges[start_he].vertex_idx != INVALID_IDX) {
+				uint32_t he = start_he;
+				int guard2 = 0;
+				do {
+					uint32_t neighbor_edge = halfedges[he].edge_idx;
+					if (neighbor_edge != (uint32_t)idx && neighbor_edge != INVALID_IDX) {
+						if (color_mask[neighbor_edge] == -1) {
+							if (priorities[neighbor_edge] > priorities[idx] ||
+								(priorities[neighbor_edge] == priorities[idx] && neighbor_edge > (uint32_t)idx)) {
+								is_local_max = false;
+								break;
+							}
+						} else if (color_mask[neighbor_edge] < 32) {
+							used_colors |= (1u << color_mask[neighbor_edge]);
+						}
+					}
+					uint32_t tw = halfedges[he].twin_idx;
+					if (tw == INVALID_IDX) break;
+					he = halfedges[tw].next_idx;
+					if (he == INVALID_IDX) break;
+					if (++guard2 > 1024) break;
+				} while (he != start_he);
+			}
+		}
+
+		if (is_local_max) {
+			int color = 0;
+			while (used_colors & (1u << color)) color++;
+			color_mask[idx] = color;
+		} else {
+			*done = false;
+		}
+	} while(0); }
 }
 
-/**
- * Computes the normal of every vertex in the mesh based on its neighbors.
- * For each outgoing halfedge h from the vertex, the face on h's left is the
- * triangle (pi, pk, pj) where pk = halfedges[h.next].vertex (target of h)
- * and pj = halfedges[h.next.next].vertex (third corner). The (un-normalized)
- * face normal is cross(pk-pi, pj-pi); summing over all incident faces and
- * normalizing yields the area-weighted vertex normal.
- */
 __global__ void kernel_get_vertex_normals(
 	Mesh::Vertex* vertices,
 	Mesh::Halfedge* halfedges,
@@ -330,42 +280,43 @@ __global__ void kernel_get_vertex_normals(
 	uint32_t num_vertices,
 	uint32_t num_halfedges
 ) {
-	int index = blockDim.x * blockIdx.x + threadIdx.x;
-	if (index >= num_vertices) return;
+	for (int index = blockDim.x * blockIdx.x + threadIdx.x;
+	     (uint32_t)index < num_vertices;
+	     index += blockDim.x * gridDim.x)
+	{ do {
+		Vec3 n = Vec3(0.0f, 0.0f, 0.0f);
+		Vec3 pi = vertices[index].position;
+		uint32_t h_idx = vertices[index].halfedge_idx;
+		if (h_idx == INVALID_IDX) { vertex_normals[index] = Vec3(0.0f, 0.0f, 0.0f); break; }
+		if (halfedges[h_idx].vertex_idx == INVALID_IDX) { vertex_normals[index] = Vec3(0.0f, 0.0f, 0.0f); break; }
 
-	Vec3 n = Vec3(0.0f, 0.0f, 0.0f);
-	Vec3 pi = vertices[index].position;
-	uint32_t h_idx = vertices[index].halfedge_idx;
-	if (h_idx == INVALID_IDX) { vertex_normals[index] = Vec3(0.0f, 0.0f, 0.0f); return; }
-	if (halfedges[h_idx].vertex_idx == INVALID_IDX) { vertex_normals[index] = Vec3(0.0f, 0.0f, 0.0f); return; }
+		uint32_t curr_idx = h_idx;
+		int guard = 0;
+		do {
+			Mesh::Halfedge h = halfedges[curr_idx];
+			uint32_t hn = h.next_idx;
+			if (hn == INVALID_IDX) break;
+			uint32_t hnn = halfedges[hn].next_idx;
+			if (hnn == INVALID_IDX) break;
+			uint32_t pk_v = halfedges[hn].vertex_idx;
+			uint32_t pj_v = halfedges[hnn].vertex_idx;
+			if (pk_v != INVALID_IDX && pj_v != INVALID_IDX && !faces[h.face_idx].boundary) {
+				Vec3 pk = vertices[pk_v].position;
+				Vec3 pj = vertices[pj_v].position;
+				n += cross(pk - pi, pj - pi);
+			}
+			uint32_t tw = h.twin_idx;
+			if (tw == INVALID_IDX) break;
+			curr_idx = halfedges[tw].next_idx;
+			if (curr_idx == INVALID_IDX) break;
+			if (++guard > 1024) break;
+		} while (curr_idx != h_idx);
 
-	uint32_t curr_idx = h_idx;
-	int guard = 0;
-	do {
-		Mesh::Halfedge h = halfedges[curr_idx];
-		uint32_t hn = h.next_idx;
-		if (hn == INVALID_IDX) break;
-		uint32_t hnn = halfedges[hn].next_idx;
-		if (hnn == INVALID_IDX) break;
-		uint32_t pk_v = halfedges[hn].vertex_idx;
-		uint32_t pj_v = halfedges[hnn].vertex_idx;
-		if (pk_v != INVALID_IDX && pj_v != INVALID_IDX && !faces[h.face_idx].boundary) {
-			Vec3 pk = vertices[pk_v].position;
-			Vec3 pj = vertices[pj_v].position;
-			n += cross(pk - pi, pj - pi);
-		}
-		// advance to next outgoing halfedge around the vertex
-		uint32_t tw = h.twin_idx;
-		if (tw == INVALID_IDX) break;
-		curr_idx = halfedges[tw].next_idx;
-		if (curr_idx == INVALID_IDX) break;
-		if (++guard > 1024) break;
-	} while (curr_idx != h_idx);
-
-	float len = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
-	if (len > 1e-12f) n = n * (1.0f / len);
-	else n = Vec3(0.0f, 0.0f, 0.0f);
-	vertex_normals[index] = n;
+		float len = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
+		if (len > 1e-12f) n = n * (1.0f / len);
+		else n = Vec3(0.0f, 0.0f, 0.0f);
+		vertex_normals[index] = n;
+	} while(0); }
 }
 
 __global__ void kernel_smooth_vertex(
@@ -383,46 +334,45 @@ __global__ void kernel_smooth_vertex(
 	float smoothing_factor,
 	int color
 ) {
-	int index = blockDim.x * blockIdx.x + threadIdx.x;
-	if (index >= num_vertices) return;
-	if (vertex_color_mask[index] != color) return;
+	for (int index = blockDim.x * blockIdx.x + threadIdx.x;
+	     (uint32_t)index < num_vertices;
+	     index += blockDim.x * gridDim.x)
+	{ do {
+		if (vertex_color_mask[index] != color) break;
 
-	Mesh::Vertex v = vertices[index];
+		Mesh::Vertex v = vertices[index];
+		Vec3 center;
 
-	Vec3 center;
+		uint32_t h_idx = v.halfedge_idx;
+		if (h_idx == INVALID_IDX) break;
+		if (halfedges[h_idx].vertex_idx == INVALID_IDX) break;
+		uint32_t curr_idx = h_idx;
 
-	uint32_t h_idx = v.halfedge_idx;
-	if (h_idx == INVALID_IDX) return; // collapsed/isolated vertex — skip
-	// stale start_he: vertex points to halfedge that was invalidated by prior collapse
-	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return;
-	uint32_t curr_idx = h_idx;
+		uint32_t count = 0;
+		int sguard = 0;
+		do {
+			Mesh::Halfedge h = halfedges[curr_idx];
+			uint32_t tw = h.twin_idx;
+			if (tw == INVALID_IDX) break;
+			uint32_t nb_idx = halfedges[tw].vertex_idx;
+			if (nb_idx == INVALID_IDX) break;
+			Mesh::Vertex neighbor = vertices[nb_idx];
+			center += neighbor.position;
+			count++;
+			curr_idx = halfedges[tw].next_idx;
+			if (curr_idx == INVALID_IDX) break;
+			if (++sguard > 1024) break;
+		} while (curr_idx != h_idx);
 
-	uint32_t count = 0;
-	int sguard = 0;
-	do {
-		Mesh::Halfedge h = halfedges[curr_idx];
+		if (count == 0) break;
+		center /= count;
 
-		uint32_t tw = h.twin_idx;
-		if (tw == INVALID_IDX) break;
-		uint32_t nb_idx = halfedges[tw].vertex_idx;
-		if (nb_idx == INVALID_IDX) break;
-		Mesh::Vertex neighbor = vertices[nb_idx];
-		center += neighbor.position;
-		count++;
-
-		curr_idx = halfedges[tw].next_idx;
-		if (curr_idx == INVALID_IDX) break;
-		if (++sguard > 1024) break;
-	} while (curr_idx != h_idx);
-
-	if (count == 0) return;
-	center /= count;
-
-	center = v.position + smoothing_factor * (center - v.position);
-	Vec3 normal = vertex_normals[index];
-	center = center - dot(normal, center) * normal;
-	DPRINTF("vertex %d: (%f %f %f) -> (%f %f %f)\n", index, v.position.x, v.position.y, v.position.z, center.x, center.y, center.z);
-	vertex_pos[index] = center;
+		center = v.position + smoothing_factor * (center - v.position);
+		Vec3 normal = vertex_normals[index];
+		center = center - dot(normal, center) * normal;
+		DPRINTF("vertex %d: (%f %f %f) -> (%f %f %f)\n", index, v.position.x, v.position.y, v.position.z, center.x, center.y, center.z);
+		vertex_pos[index] = center;
+	} while(0); }
 }
 
 __global__ void kernel_update_vertex_pos(
@@ -430,27 +380,27 @@ __global__ void kernel_update_vertex_pos(
 	Vec3* vertex_pos,
 	uint32_t num_vertices
 ) {
-	int index = blockDim.x * blockIdx.x + threadIdx.x;
-	if (index >= num_vertices) return;
-
-	vertices[index].position = vertex_pos[index];
+	for (int index = blockDim.x * blockIdx.x + threadIdx.x;
+	     (uint32_t)index < num_vertices;
+	     index += blockDim.x * gridDim.x)
+	{
+		vertices[index].position = vertex_pos[index];
+	}
 }
 
-// Initialize vertex_pos[i] with current vertex positions so that early-returning
-// smoothing kernels don't leave uninitialized memory for update_vertex_pos to copy.
 __global__ void kernel_init_vertex_pos(
 	Mesh::Vertex* vertices,
 	Vec3* vertex_pos,
 	uint32_t num_vertices
 ) {
-	int index = blockDim.x * blockIdx.x + threadIdx.x;
-	if (index >= num_vertices) return;
-	vertex_pos[index] = vertices[index].position;
+	for (int index = blockDim.x * blockIdx.x + threadIdx.x;
+	     (uint32_t)index < num_vertices;
+	     index += blockDim.x * gridDim.x)
+	{
+		vertex_pos[index] = vertices[index].position;
+	}
 }
 
-/**
- * Computes the degree of a vertex by walking around it
- */
 __device__ uint32_t vertex_degree(Mesh::Vertex* vertices, Mesh::Halfedge* halfedges, uint32_t v_idx) {
 	uint32_t start_he = vertices[v_idx].halfedge_idx;
 	if (start_he == INVALID_IDX) return 0;
@@ -461,7 +411,7 @@ __device__ uint32_t vertex_degree(Mesh::Vertex* vertices, Mesh::Halfedge* halfed
 	do {
 		deg++;
 		uint32_t tw = halfedges[he].twin_idx;
-		if (tw == INVALID_IDX) { deg++; break; } // boundary vertex
+		if (tw == INVALID_IDX) { deg++; break; }
 		he = halfedges[tw].next_idx;
 		if (he == INVALID_IDX) break;
 		if (++dguard > 1024) break;
@@ -469,198 +419,162 @@ __device__ uint32_t vertex_degree(Mesh::Vertex* vertices, Mesh::Halfedge* halfed
 	return deg;
 }
 
-/**
- * Populates a mask of size num Edges with the edges
- * which should be flipped
- */
 __global__ void kernel_get_flip_edges(
 	Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Vertex* vertices, Mesh::Face* faces,
 	uint32_t num_edges, int* op_mask)
 {
-	int idx = blockDim.x * blockIdx.x + threadIdx.x;
-	if (idx >= num_edges) { return; }
+	for (int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	     (uint32_t)idx < num_edges;
+	     idx += blockDim.x * gridDim.x)
+	{ do {
+		op_mask[idx] = 0;
 
-	op_mask[idx] = 0;
+		uint32_t h_idx = edges[idx].halfedge_idx;
+		if (h_idx == INVALID_IDX) break;
+		if (halfedges[h_idx].vertex_idx == INVALID_IDX) break;
 
-	uint32_t h_idx = edges[idx].halfedge_idx;
-	if (h_idx == INVALID_IDX) return;
-	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return; // halfedge was invalidated by prior collapse
+		uint32_t t_idx = halfedges[h_idx].twin_idx;
+		if (t_idx == INVALID_IDX) break;
+		if (halfedges[t_idx].vertex_idx == INVALID_IDX) break;
 
-	uint32_t t_idx = halfedges[h_idx].twin_idx;
-	if (t_idx == INVALID_IDX) return; // boundary edge, can't flip
-	if (halfedges[t_idx].vertex_idx == INVALID_IDX) return;
+		if (faces[halfedges[h_idx].face_idx].boundary) break;
+		if (faces[halfedges[t_idx].face_idx].boundary) break;
 
-	// Skip edges that touch a boundary face
-	if (faces[halfedges[h_idx].face_idx].boundary) return;
-	if (faces[halfedges[t_idx].face_idx].boundary) return;
+		uint32_t vB = halfedges[h_idx].vertex_idx;
+		uint32_t vD = halfedges[t_idx].vertex_idx;
+		uint32_t hn = halfedges[h_idx].next_idx;
+		uint32_t tn = halfedges[t_idx].next_idx;
+		if (hn == INVALID_IDX || tn == INVALID_IDX) break;
+		uint32_t hnn = halfedges[hn].next_idx;
+		uint32_t tnn = halfedges[tn].next_idx;
+		if (hnn == INVALID_IDX || tnn == INVALID_IDX) break;
+		uint32_t vA = halfedges[hnn].vertex_idx;
+		uint32_t vC = halfedges[tnn].vertex_idx;
+		if (vA == INVALID_IDX || vC == INVALID_IDX || vB == INVALID_IDX || vD == INVALID_IDX) break;
 
-	// 4 vertices of the diamond:
-	//       B
-	//      /|\
-	//     / | \
-	//    A  |  C
-	//     \ | /
-	//      \|/
-	//       D
-	// h = B->D, twin = D->B
-	uint32_t vB = halfedges[h_idx].vertex_idx;
-	uint32_t vD = halfedges[t_idx].vertex_idx;
-	uint32_t hn = halfedges[h_idx].next_idx;
-	uint32_t tn = halfedges[t_idx].next_idx;
-	if (hn == INVALID_IDX || tn == INVALID_IDX) return;
-	uint32_t hnn = halfedges[hn].next_idx;
-	uint32_t tnn = halfedges[tn].next_idx;
-	if (hnn == INVALID_IDX || tnn == INVALID_IDX) return;
-	uint32_t vA = halfedges[hnn].vertex_idx;
-	uint32_t vC = halfedges[tnn].vertex_idx;
-	if (vA == INVALID_IDX || vC == INVALID_IDX || vB == INVALID_IDX || vD == INVALID_IDX) return;
+		int degA = vertex_degree(vertices, halfedges, vA);
+		int degB = vertex_degree(vertices, halfedges, vB);
+		int degC = vertex_degree(vertices, halfedges, vC);
+		int degD = vertex_degree(vertices, halfedges, vD);
 
-	int degA = vertex_degree(vertices, halfedges, vA);
-	int degB = vertex_degree(vertices, halfedges, vB);
-	int degC = vertex_degree(vertices, halfedges, vC);
-	int degD = vertex_degree(vertices, halfedges, vD);
+		int dev_before = abs(degA - 6) + abs(degB - 6) + abs(degC - 6) + abs(degD - 6);
+		int dev_after  = abs(degA + 1 - 6) + abs(degB - 1 - 6) + abs(degC + 1 - 6) + abs(degD - 1 - 6);
 
-	// deviation from ideal degree 6
-	int dev_before = abs(degA - 6) + abs(degB - 6) + abs(degC - 6) + abs(degD - 6);
-	// after flip: B,D lose 1 edge; A,C gain 1 edge
-	int dev_after = abs(degA + 1 - 6) + abs(degB - 1 - 6) + abs(degC + 1 - 6) + abs(degD - 1 - 6);
-
-	op_mask[idx] = (dev_after < dev_before) ? 1 : 0;
+		op_mask[idx] = (dev_after < dev_before) ? 1 : 0;
+	} while(0); }
 }
+
 __global__ void kernel_flip_edge(
 	Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Vertex* vertices, Mesh::Face* faces,
 	uint32_t num_edges, int* edge_color_mask, int* op_mask, int color)
 {
-	int idx = blockDim.x * blockIdx.x + threadIdx.x;
-	if (idx >= num_edges) return;
-	if (edge_color_mask[idx] != color) return;
-	if (op_mask[idx] != 1) return;
+	for (int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	     (uint32_t)idx < num_edges;
+	     idx += blockDim.x * gridDim.x)
+	{ do {
+		if (edge_color_mask[idx] != color) break;
+		if (op_mask[idx] != 1) break;
 
-	uint32_t h_idx = edges[idx].halfedge_idx;
-	if (h_idx == INVALID_IDX) return;
-	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return;
-	uint32_t t_idx = halfedges[h_idx].twin_idx;
-	if (t_idx == INVALID_IDX) return; // boundary edge
-	if (halfedges[t_idx].vertex_idx == INVALID_IDX) return;
+		uint32_t h_idx = edges[idx].halfedge_idx;
+		if (h_idx == INVALID_IDX) break;
+		if (halfedges[h_idx].vertex_idx == INVALID_IDX) break;
+		uint32_t t_idx = halfedges[h_idx].twin_idx;
+		if (t_idx == INVALID_IDX) break;
+		if (halfedges[t_idx].vertex_idx == INVALID_IDX) break;
 
-	// Gather the 6 halfedges
-	uint32_t hn_idx = halfedges[h_idx].next_idx;   // h_next
-	uint32_t hp_idx = halfedges[hn_idx].next_idx;   // h_prev (= h_next.next)
-	uint32_t tn_idx = halfedges[t_idx].next_idx;    // t_next
-	uint32_t tp_idx = halfedges[tn_idx].next_idx;   // t_prev (= t_next.next)
+		uint32_t hn_idx = halfedges[h_idx].next_idx;
+		uint32_t hp_idx = halfedges[hn_idx].next_idx;
+		uint32_t tn_idx = halfedges[t_idx].next_idx;
+		uint32_t tp_idx = halfedges[tn_idx].next_idx;
 
-	// The 4 vertices
-	uint32_t v0 = halfedges[h_idx].vertex_idx;
-	uint32_t v1 = halfedges[t_idx].vertex_idx;
-	uint32_t v2 = halfedges[hp_idx].vertex_idx;
-	uint32_t v3 = halfedges[tp_idx].vertex_idx;
+		uint32_t v0 = halfedges[h_idx].vertex_idx;
+		uint32_t v1 = halfedges[t_idx].vertex_idx;
+		uint32_t v2 = halfedges[hp_idx].vertex_idx;
+		uint32_t v3 = halfedges[tp_idx].vertex_idx;
 
-	// The 2 faces
-	uint32_t f0 = halfedges[h_idx].face_idx;
-	uint32_t f1 = halfedges[t_idx].face_idx;
+		uint32_t f0 = halfedges[h_idx].face_idx;
+		uint32_t f1 = halfedges[t_idx].face_idx;
 
-	// --- Rewire ---
-	// After flip:
-	//   Face f0: h(v2->v3) -> t_prev(v3->v1) -> h_next(v1->v2)
-	//   Face f1: t(v3->v2) -> h_prev(v2->v0) -> t_next(v0->v3)
+		halfedges[h_idx].vertex_idx = v2;
+		halfedges[t_idx].vertex_idx = v3;
 
-	// Update vertices of h and t
-	halfedges[h_idx].vertex_idx = v2;
-	halfedges[t_idx].vertex_idx = v3;
+		halfedges[h_idx].next_idx = tp_idx;
+		halfedges[tp_idx].next_idx = hn_idx;
+		halfedges[hn_idx].next_idx = h_idx;
 
-	// Update next pointers
-	halfedges[h_idx].next_idx = tp_idx;
-	halfedges[tp_idx].next_idx = hn_idx;
-	halfedges[hn_idx].next_idx = h_idx;
+		halfedges[t_idx].next_idx = hp_idx;
+		halfedges[hp_idx].next_idx = tn_idx;
+		halfedges[tn_idx].next_idx = t_idx;
 
-	halfedges[t_idx].next_idx = hp_idx;
-	halfedges[hp_idx].next_idx = tn_idx;
-	halfedges[tn_idx].next_idx = t_idx;
+		halfedges[h_idx].face_idx  = f0;
+		halfedges[tp_idx].face_idx = f0;
+		halfedges[hn_idx].face_idx = f0;
 
-	// Update face assignments (t_prev moves to f0, h_prev moves to f1)
-	halfedges[h_idx].face_idx = f0;
-	halfedges[tp_idx].face_idx = f0;
-	halfedges[hn_idx].face_idx = f0;
+		halfedges[t_idx].face_idx  = f1;
+		halfedges[hp_idx].face_idx = f1;
+		halfedges[tn_idx].face_idx = f1;
 
-	halfedges[t_idx].face_idx = f1;
-	halfedges[hp_idx].face_idx = f1;
-	halfedges[tn_idx].face_idx = f1;
+		faces[f0].halfedge_idx = h_idx;
+		faces[f1].halfedge_idx = t_idx;
 
-	// Update face halfedge pointers
-	faces[f0].halfedge_idx = h_idx;
-	faces[f1].halfedge_idx = t_idx;
-
-	// Update vertex halfedge pointers (v0 and v1 might have pointed to h or t)
-	vertices[v0].halfedge_idx = tn_idx;
-	vertices[v1].halfedge_idx = hn_idx;
-	vertices[v2].halfedge_idx = h_idx;
-	vertices[v3].halfedge_idx = t_idx;
+		vertices[v0].halfedge_idx = tn_idx;
+		vertices[v1].halfedge_idx = hn_idx;
+		vertices[v2].halfedge_idx = h_idx;
+		vertices[v3].halfedge_idx = t_idx;
+	} while(0); }
 }
 
-
 __global__ void kernel_get_edge_lengths(
-	Mesh::Edge* edges, 
-	Mesh::Halfedge* halfedges, 
-	Mesh::Vertex* vertices, 
+	Mesh::Edge* edges,
+	Mesh::Halfedge* halfedges,
+	Mesh::Vertex* vertices,
 	float* lengths,
 	uint32_t num_edges)
 {
-	int index = blockDim.x * blockIdx.x + threadIdx.x;
-	if (index >= num_edges) return;
+	for (int index = blockDim.x * blockIdx.x + threadIdx.x;
+	     (uint32_t)index < num_edges;
+	     index += blockDim.x * gridDim.x)
+	{ do {
+		Mesh::Edge e = edges[index];
+		if (e.halfedge_idx == INVALID_IDX) { lengths[index] = 0.0f; break; }
+		Mesh::Halfedge h = halfedges[e.halfedge_idx];
+		if (h.twin_idx == INVALID_IDX || h.vertex_idx == INVALID_IDX) { lengths[index] = 0.0f; break; }
+		Mesh::Halfedge h_twin = halfedges[h.twin_idx];
+		if (h_twin.vertex_idx == INVALID_IDX) { lengths[index] = 0.0f; break; }
+		Mesh::Vertex v1 = vertices[h.vertex_idx];
+		Mesh::Vertex v2 = vertices[h_twin.vertex_idx];
 
-	Mesh::Edge e = edges[index];
-	if (e.halfedge_idx == INVALID_IDX) { lengths[index] = 0.0f; return; }
-	Mesh::Halfedge h = halfedges[e.halfedge_idx];
-	if (h.twin_idx == INVALID_IDX || h.vertex_idx == INVALID_IDX) { lengths[index] = 0.0f; return; }
-	Mesh::Halfedge h_twin = halfedges[h.twin_idx];
-	if (h_twin.vertex_idx == INVALID_IDX) { lengths[index] = 0.0f; return; }
-	Mesh::Vertex v1 = vertices[h.vertex_idx];
-	Mesh::Vertex v2 = vertices[h_twin.vertex_idx];
-
-	float dx = (v1.position.x - v2.position.x);
-	float dy = (v1.position.y - v2.position.y);
-	float dz = (v1.position.z - v2.position.z);
-
-	float length = std::sqrt(dx * dx + dy * dy + dz * dz);
-	lengths[index] = length;
-	DPRINTF("edge %d is length %f\n", index, length);
+		float dx = v1.position.x - v2.position.x;
+		float dy = v1.position.y - v2.position.y;
+		float dz = v1.position.z - v2.position.z;
+		lengths[index] = std::sqrt(dx*dx + dy*dy + dz*dz);
+		DPRINTF("edge %d is length %f\n", index, lengths[index]);
+	} while(0); }
 }
 
-/**
- * Populates a mask of size numEdges with the edges
- * which should be collapsed
- */
 __global__ void kernel_get_collapse_edges(
 	Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Face* faces,
-	float* lengths, uint32_t num_edges, float avg_len, float collapse_factor, int* op_mask) {
-	int index = blockDim.x * blockIdx.x + threadIdx.x;
-	if (index >= num_edges) return;
-	op_mask[index] = 0;
+	float* lengths, uint32_t num_edges, float avg_len, float collapse_factor, int* op_mask)
+{
+	for (int index = blockDim.x * blockIdx.x + threadIdx.x;
+	     (uint32_t)index < num_edges;
+	     index += blockDim.x * gridDim.x)
+	{ do {
+		op_mask[index] = 0;
 
-	uint32_t h_idx = edges[index].halfedge_idx;
-	if (h_idx == INVALID_IDX) return;
-	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return;
-	uint32_t t_idx = halfedges[h_idx].twin_idx;
-	if (t_idx == INVALID_IDX) return; // boundary edge
-	if (halfedges[t_idx].vertex_idx == INVALID_IDX) return;
-	if (faces[halfedges[h_idx].face_idx].boundary) return;
-	if (faces[halfedges[t_idx].face_idx].boundary) return;
+		uint32_t h_idx = edges[index].halfedge_idx;
+		if (h_idx == INVALID_IDX) break;
+		if (halfedges[h_idx].vertex_idx == INVALID_IDX) break;
+		uint32_t t_idx = halfedges[h_idx].twin_idx;
+		if (t_idx == INVALID_IDX) break;
+		if (halfedges[t_idx].vertex_idx == INVALID_IDX) break;
+		if (faces[halfedges[h_idx].face_idx].boundary) break;
+		if (faces[halfedges[t_idx].face_idx].boundary) break;
 
-	op_mask[index] = lengths[index] < avg_len * collapse_factor;
+		op_mask[index] = lengths[index] < avg_len * collapse_factor;
+	} while(0); }
 }
-/**
- * Collapse edge: merge two endpoints into one (midpoint).
- * The edge and its two adjacent faces are removed (marked invalid).
- *
- * Before:                After:
- *       A                    A
- *      /|\                  / \
- *     / | \                /   \
- *    B--+--C     →        M     (B,C merged into M at B's slot)
- *     \ | /                \   /
- *      \|/                  \ /
- *       D                    D
- */
+
 __global__ void kernel_collapse_edge(
 	Mesh::Vertex* vertices,
 	Mesh::Edge* edges,
@@ -671,167 +585,129 @@ __global__ void kernel_collapse_edge(
 	uint32_t num_edges,
 	int color
 ) {
-	int idx = blockDim.x * blockIdx.x + threadIdx.x;
-	if (idx >= num_edges) return;
-	if (edge_color_mask[idx] != color) return;
-	if (op_mask[idx] != 1) return;
+	for (int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	     (uint32_t)idx < num_edges;
+	     idx += blockDim.x * gridDim.x)
+	{ do {
+		if (edge_color_mask[idx] != color) break;
+		if (op_mask[idx] != 1) break;
 
-	uint32_t h_idx = edges[idx].halfedge_idx;
-	if (h_idx == INVALID_IDX) return;
-	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return;
-	uint32_t t_idx = halfedges[h_idx].twin_idx;
-	if (t_idx == INVALID_IDX) return; // boundary edge
-	if (halfedges[t_idx].vertex_idx == INVALID_IDX) return;
+		uint32_t h_idx = edges[idx].halfedge_idx;
+		if (h_idx == INVALID_IDX) break;
+		if (halfedges[h_idx].vertex_idx == INVALID_IDX) break;
+		uint32_t t_idx = halfedges[h_idx].twin_idx;
+		if (t_idx == INVALID_IDX) break;
+		if (halfedges[t_idx].vertex_idx == INVALID_IDX) break;
 
-	// 6 halfedges of the two triangles
-	uint32_t hn_idx = halfedges[h_idx].next_idx;   // C→A
-	if (hn_idx == INVALID_IDX) return;
-	uint32_t hp_idx = halfedges[hn_idx].next_idx;   // A→B
-	if (hp_idx == INVALID_IDX) return;
-	uint32_t tn_idx = halfedges[t_idx].next_idx;    // B→D
-	if (tn_idx == INVALID_IDX) return;
-	uint32_t tp_idx = halfedges[tn_idx].next_idx;   // D→C
-	if (tp_idx == INVALID_IDX) return;
-	// If any of these inner halfedges was invalidated by a prior collapse this kernel,
-	// our pre-collapse view is stale; skip to avoid corrupting connectivity further.
-	if (halfedges[hn_idx].vertex_idx == INVALID_IDX) return;
-	if (halfedges[hp_idx].vertex_idx == INVALID_IDX) return;
-	if (halfedges[tn_idx].vertex_idx == INVALID_IDX) return;
-	if (halfedges[tp_idx].vertex_idx == INVALID_IDX) return;
+		uint32_t hn_idx = halfedges[h_idx].next_idx;
+		if (hn_idx == INVALID_IDX) break;
+		uint32_t hp_idx = halfedges[hn_idx].next_idx;
+		if (hp_idx == INVALID_IDX) break;
+		uint32_t tn_idx = halfedges[t_idx].next_idx;
+		if (tn_idx == INVALID_IDX) break;
+		uint32_t tp_idx = halfedges[tn_idx].next_idx;
+		if (tp_idx == INVALID_IDX) break;
 
-	// 4 vertices
-	uint32_t vB = halfedges[h_idx].vertex_idx;
-	uint32_t vC = halfedges[t_idx].vertex_idx;
-	uint32_t vA = halfedges[hp_idx].vertex_idx;
-	uint32_t vD = halfedges[tp_idx].vertex_idx;
-	if (vA == INVALID_IDX || vB == INVALID_IDX || vC == INVALID_IDX || vD == INVALID_IDX) return;
+		if (halfedges[hn_idx].vertex_idx == INVALID_IDX) break;
+		if (halfedges[hp_idx].vertex_idx == INVALID_IDX) break;
+		if (halfedges[tn_idx].vertex_idx == INVALID_IDX) break;
+		if (halfedges[tp_idx].vertex_idx == INVALID_IDX) break;
 
-	// 2 faces to remove
-	uint32_t f0 = halfedges[h_idx].face_idx;
-	uint32_t f1 = halfedges[t_idx].face_idx;
+		uint32_t vB = halfedges[h_idx].vertex_idx;
+		uint32_t vC = halfedges[t_idx].vertex_idx;
+		uint32_t vA = halfedges[hp_idx].vertex_idx;
+		uint32_t vD = halfedges[tp_idx].vertex_idx;
+		if (vA == INVALID_IDX || vB == INVALID_IDX || vC == INVALID_IDX || vD == INVALID_IDX) break;
 
-	// Edges on the boundary of the diamond (to be merged)
-	uint32_t ehn = halfedges[hn_idx].edge_idx; // edge C-A
-	uint32_t ehp = halfedges[hp_idx].edge_idx; // edge A-B
-	uint32_t etn = halfedges[tn_idx].edge_idx; // edge B-D
-	uint32_t etp = halfedges[tp_idx].edge_idx; // edge D-C
+		uint32_t f0 = halfedges[h_idx].face_idx;
+		uint32_t f1 = halfedges[t_idx].face_idx;
 
-	// Twin halfedges of the 4 outer halfedges
-	uint32_t hn_twin = halfedges[hn_idx].twin_idx;
-	uint32_t hp_twin = halfedges[hp_idx].twin_idx;
-	uint32_t tn_twin = halfedges[tn_idx].twin_idx;
-	uint32_t tp_twin = halfedges[tp_idx].twin_idx;
+		uint32_t ehn = halfedges[hn_idx].edge_idx;
+		uint32_t ehp = halfedges[hp_idx].edge_idx;
+		uint32_t etn = halfedges[tn_idx].edge_idx;
+		uint32_t etp = halfedges[tp_idx].edge_idx;
 
-	// Move B to midpoint of B and C
-	vertices[vB].position = (vertices[vB].position + vertices[vC].position) * 0.5f;
+		uint32_t hn_twin = halfedges[hn_idx].twin_idx;
+		uint32_t hp_twin = halfedges[hp_idx].twin_idx;
+		uint32_t tn_twin = halfedges[tn_idx].twin_idx;
+		uint32_t tp_twin = halfedges[tp_idx].twin_idx;
 
-	// Rewire all halfedges that pointed to C → now point to B
-	// Walk around C and redirect
-	uint32_t start_he = vertices[vC].halfedge_idx;
-	if (start_he != INVALID_IDX && halfedges[start_he].vertex_idx == vC) {
-		uint32_t he = start_he;
-		int cguard = 0;
-		do {
-			halfedges[he].vertex_idx = vB;
-			uint32_t tw = halfedges[he].twin_idx;
-			if (tw == INVALID_IDX) break;
-			he = halfedges[tw].next_idx;
-			if (he == INVALID_IDX) break;
-			if (++cguard > 1024) break;
-		} while (he != start_he);
-	}
+		vertices[vB].position = (vertices[vB].position + vertices[vC].position) * 0.5f;
 
-	// Merge twin pairs: make outer halfedges twins of each other
-	// hn and hp's twins become direct twins (removing face f0)
-	if (hn_twin != INVALID_IDX) halfedges[hn_twin].twin_idx = hp_twin;
-	if (hp_twin != INVALID_IDX) halfedges[hp_twin].twin_idx = hn_twin;
-	// Merge one edge: keep ehp, mark ehn as invalid.
-	// IMPORTANT: edges[ehp].halfedge_idx may still point to hp_idx (now invalid).
-	// Redirect it to a surviving halfedge of this edge.
-	if (hn_twin != INVALID_IDX) halfedges[hn_twin].edge_idx = ehp;
-	if (hn_twin != INVALID_IDX)      edges[ehp].halfedge_idx = hn_twin;
-	else if (hp_twin != INVALID_IDX) edges[ehp].halfedge_idx = hp_twin;
-	else                              edges[ehp].halfedge_idx = INVALID_IDX;
-	edges[ehn].halfedge_idx = INVALID_IDX;
+		uint32_t start_he = vertices[vC].halfedge_idx;
+		if (start_he != INVALID_IDX && halfedges[start_he].vertex_idx == vC) {
+			uint32_t he = start_he;
+			int cguard = 0;
+			do {
+				halfedges[he].vertex_idx = vB;
+				uint32_t tw = halfedges[he].twin_idx;
+				if (tw == INVALID_IDX) break;
+				he = halfedges[tw].next_idx;
+				if (he == INVALID_IDX) break;
+				if (++cguard > 1024) break;
+			} while (he != start_he);
+		}
 
-	// tn and tp's twins become direct twins (removing face f1)
-	if (tn_twin != INVALID_IDX) halfedges[tn_twin].twin_idx = tp_twin;
-	if (tp_twin != INVALID_IDX) halfedges[tp_twin].twin_idx = tn_twin;
-	// Merge one edge: keep etn, mark etp as invalid.
-	// edges[etn].halfedge_idx may still point to tn_idx (now invalid). Redirect.
-	if (tp_twin != INVALID_IDX) halfedges[tp_twin].edge_idx = etn;
-	if (tn_twin != INVALID_IDX)      edges[etn].halfedge_idx = tn_twin;
-	else if (tp_twin != INVALID_IDX) edges[etn].halfedge_idx = tp_twin;
-	else                              edges[etn].halfedge_idx = INVALID_IDX;
-	edges[etp].halfedge_idx = INVALID_IDX;
+		if (hn_twin != INVALID_IDX) halfedges[hn_twin].twin_idx = hp_twin;
+		if (hp_twin != INVALID_IDX) halfedges[hp_twin].twin_idx = hn_twin;
+		if (hn_twin != INVALID_IDX) halfedges[hn_twin].edge_idx = ehp;
+		if (hn_twin != INVALID_IDX)      edges[ehp].halfedge_idx = hn_twin;
+		else if (hp_twin != INVALID_IDX) edges[ehp].halfedge_idx = hp_twin;
+		else                              edges[ehp].halfedge_idx = INVALID_IDX;
+		edges[ehn].halfedge_idx = INVALID_IDX;
 
-	// Mark the collapsed edge as invalid
-	edges[idx].halfedge_idx = INVALID_IDX;
+		if (tn_twin != INVALID_IDX) halfedges[tn_twin].twin_idx = tp_twin;
+		if (tp_twin != INVALID_IDX) halfedges[tp_twin].twin_idx = tn_twin;
+		if (tp_twin != INVALID_IDX) halfedges[tp_twin].edge_idx = etn;
+		if (tn_twin != INVALID_IDX)      edges[etn].halfedge_idx = tn_twin;
+		else if (tp_twin != INVALID_IDX) edges[etn].halfedge_idx = tp_twin;
+		else                              edges[etn].halfedge_idx = INVALID_IDX;
+		edges[etp].halfedge_idx = INVALID_IDX;
 
-	// Mark vertex C as invalid
-	vertices[vC].halfedge_idx = INVALID_IDX;
+		edges[idx].halfedge_idx = INVALID_IDX;
+		vertices[vC].halfedge_idx = INVALID_IDX;
 
-	// Mark the 6 inner halfedges as invalid
-	halfedges[h_idx].vertex_idx = INVALID_IDX;
-	halfedges[t_idx].vertex_idx = INVALID_IDX;
-	halfedges[hn_idx].vertex_idx = INVALID_IDX;
-	halfedges[hp_idx].vertex_idx = INVALID_IDX;
-	halfedges[tn_idx].vertex_idx = INVALID_IDX;
-	halfedges[tp_idx].vertex_idx = INVALID_IDX;
+		halfedges[h_idx].vertex_idx  = INVALID_IDX;
+		halfedges[t_idx].vertex_idx  = INVALID_IDX;
+		halfedges[hn_idx].vertex_idx = INVALID_IDX;
+		halfedges[hp_idx].vertex_idx = INVALID_IDX;
+		halfedges[tn_idx].vertex_idx = INVALID_IDX;
+		halfedges[tp_idx].vertex_idx = INVALID_IDX;
 
-	// Mark the 2 faces as invalid
-	faces[f0].halfedge_idx = INVALID_IDX;
-	faces[f1].halfedge_idx = INVALID_IDX;
+		faces[f0].halfedge_idx = INVALID_IDX;
+		faces[f1].halfedge_idx = INVALID_IDX;
 
-	// Update vertex halfedge pointers for A, B, D
-	// Convention: vertex.halfedge must be an outgoing halfedge (halfedges[h].vertex_idx == that vertex).
-	// hn_twin source = A; hp_twin source = B; tn_twin source = D; tp_twin source = C (rewritten to B).
-	vertices[vA].halfedge_idx = (hn_twin != INVALID_IDX) ? hn_twin : hp_twin;
-	vertices[vD].halfedge_idx = (tn_twin != INVALID_IDX) ? tn_twin : tp_twin;
-	vertices[vB].halfedge_idx = (hp_twin != INVALID_IDX) ? hp_twin : tp_twin;
+		vertices[vA].halfedge_idx = (hn_twin != INVALID_IDX) ? hn_twin : hp_twin;
+		vertices[vD].halfedge_idx = (tn_twin != INVALID_IDX) ? tn_twin : tp_twin;
+		vertices[vB].halfedge_idx = (hp_twin != INVALID_IDX) ? hp_twin : tp_twin;
+	} while(0); }
 }
 
-/**
- * Populates a mask of size numEdges with the edges
- * which should be split
- */
 __global__ void kernel_get_split_edges(
 	Mesh::Edge* edges, Mesh::Halfedge* halfedges, Mesh::Face* faces,
-	float* lengths, uint32_t num_edges, float avg_len, float split_factor, int* op_mask) {
-	int index = blockDim.x * blockIdx.x + threadIdx.x;
-	if (index >= num_edges) return;
-	op_mask[index] = 0;
+	float* lengths, uint32_t num_edges, float avg_len, float split_factor, int* op_mask)
+{
+	for (int index = blockDim.x * blockIdx.x + threadIdx.x;
+	     (uint32_t)index < num_edges;
+	     index += blockDim.x * gridDim.x)
+	{ do {
+		op_mask[index] = 0;
 
-	uint32_t h_idx = edges[index].halfedge_idx;
-	if (h_idx == INVALID_IDX) return;
-	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return;
-	uint32_t t_idx = halfedges[h_idx].twin_idx;
-	if (t_idx == INVALID_IDX) return; // boundary edge, can't split here
-	if (halfedges[t_idx].vertex_idx == INVALID_IDX) return;
-	if (faces[halfedges[h_idx].face_idx].boundary) return;
-	if (faces[halfedges[t_idx].face_idx].boundary) return;
+		uint32_t h_idx = edges[index].halfedge_idx;
+		if (h_idx == INVALID_IDX) break;
+		if (halfedges[h_idx].vertex_idx == INVALID_IDX) break;
+		uint32_t t_idx = halfedges[h_idx].twin_idx;
+		if (t_idx == INVALID_IDX) break;
+		if (halfedges[t_idx].vertex_idx == INVALID_IDX) break;
+		if (faces[halfedges[h_idx].face_idx].boundary) break;
+		if (faces[halfedges[t_idx].face_idx].boundary) break;
 
-	DPRINTF("edge %u: length = %f, cmp = %f\n", index, lengths[index], avg_len * split_factor);
-	op_mask[index] = lengths[index] > avg_len * split_factor;
-	if (op_mask[index]) DPRINTF("edge %u should be split\n", index);
+		DPRINTF("edge %u: length = %f, cmp = %f\n", index, lengths[index], avg_len * split_factor);
+		op_mask[index] = lengths[index] > avg_len * split_factor;
+		if (op_mask[index]) DPRINTF("edge %u should be split\n", index);
+	} while(0); }
 }
 
-/**
- * Split edge at its midpoint. Creates 1 vertex, 3 edges, 6 halfedges, 2 faces.
- * split_offsets is the exclusive prefix sum of op_mask, so each thread knows
- * where to write its new elements.
- *
- * Before:                After:
- *       A                     A
- *      / \                   /|\
- *     / f0\                 / | \
- *    /     \               /  |  \
- *   B-------C             B---M---C
- *    \ f1  /               \  |  /
- *     \   /                 \ | /
- *      \ /                   \|/
- *       D                     D
- */
 __global__ void kernel_split_edge(
 	Mesh::Vertex* vertices,
 	Mesh::Edge* edges,
@@ -844,198 +720,94 @@ __global__ void kernel_split_edge(
 	uint32_t base_v, uint32_t base_e, uint32_t base_h, uint32_t base_f,
 	int color
 ) {
-	int idx = blockDim.x * blockIdx.x + threadIdx.x;
-	if (idx >= num_edges) return;
-	if (edge_color_mask[idx] != color) return;
-	if (op_mask[idx] != 1) return;
+	for (int idx = blockDim.x * blockIdx.x + threadIdx.x;
+	     (uint32_t)idx < num_edges;
+	     idx += blockDim.x * gridDim.x)
+	{ do {
+		if (edge_color_mask[idx] != color) break;
+		if (op_mask[idx] != 1) break;
 
-	uint32_t h_idx = edges[idx].halfedge_idx;
-	if (h_idx == INVALID_IDX) return;
-	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return;
-	uint32_t t_idx = halfedges[h_idx].twin_idx;
-	if (t_idx == INVALID_IDX) return; // skip boundary edges
-	if (halfedges[t_idx].vertex_idx == INVALID_IDX) return;
+		uint32_t h_idx = edges[idx].halfedge_idx;
+		if (h_idx == INVALID_IDX) break;
+		if (halfedges[h_idx].vertex_idx == INVALID_IDX) break;
+		uint32_t t_idx = halfedges[h_idx].twin_idx;
+		if (t_idx == INVALID_IDX) break;
+		if (halfedges[t_idx].vertex_idx == INVALID_IDX) break;
 
-	// Original 6 halfedges:
-	// Face f0: h(B→C), hn(C→A), hp(A→B)
-	// Face f1: t(C→B), tn(B→D), tp(D→C)
-	uint32_t hn_idx = halfedges[h_idx].next_idx;   // C→A
-	uint32_t hp_idx = halfedges[hn_idx].next_idx;   // A→B
-	uint32_t tn_idx = halfedges[t_idx].next_idx;    // B→D
-	uint32_t tp_idx = halfedges[tn_idx].next_idx;   // D→C
+		uint32_t hn_idx = halfedges[h_idx].next_idx;
+		uint32_t hp_idx = halfedges[hn_idx].next_idx;
+		uint32_t tn_idx = halfedges[t_idx].next_idx;
+		uint32_t tp_idx = halfedges[tn_idx].next_idx;
 
-	// 4 vertices
-	uint32_t vB = halfedges[h_idx].vertex_idx;
-	uint32_t vC = halfedges[t_idx].vertex_idx;
-	uint32_t vA = halfedges[hp_idx].vertex_idx;
-	uint32_t vD = halfedges[tp_idx].vertex_idx;
+		uint32_t vB = halfedges[h_idx].vertex_idx;
+		uint32_t vC = halfedges[t_idx].vertex_idx;
+		uint32_t vA = halfedges[hp_idx].vertex_idx;
+		uint32_t vD = halfedges[tp_idx].vertex_idx;
 
-	// 2 original faces
-	uint32_t f0 = halfedges[h_idx].face_idx;
-	uint32_t f1 = halfedges[t_idx].face_idx;
+		uint32_t f0 = halfedges[h_idx].face_idx;
+		uint32_t f1 = halfedges[t_idx].face_idx;
 
-	// Compute new element indices using prefix sum offset
-	int off = split_offsets[idx];
+		int off = split_offsets[idx];
 
-	uint32_t vM       = base_v + off;
+		uint32_t vM      = base_v + off;
+		uint32_t eMA_idx = base_e + off * 3;
+		uint32_t eMC_idx = base_e + off * 3 + 1;
+		uint32_t eMD_idx = base_e + off * 3 + 2;
+		uint32_t nMA_idx = base_h + off * 6;
+		uint32_t nAM_idx = base_h + off * 6 + 1;
+		uint32_t nMC_idx = base_h + off * 6 + 2;
+		uint32_t nCM_idx = base_h + off * 6 + 3;
+		uint32_t nDM_idx = base_h + off * 6 + 4;
+		uint32_t nMD_idx = base_h + off * 6 + 5;
+		uint32_t f2      = base_f + off * 2;
+		uint32_t f3      = base_f + off * 2 + 1;
 
-	uint32_t eMA_idx  = base_e + off * 3;
-	uint32_t eMC_idx  = base_e + off * 3 + 1;
-	uint32_t eMD_idx  = base_e + off * 3 + 2;
+		vertices[vM].position   = (vertices[vB].position + vertices[vC].position) * 0.5f;
+		vertices[vM].halfedge_idx = t_idx;
+		vertices[vM].id          = vM;
 
-	uint32_t nMA_idx  = base_h + off * 6;       // M→A
-	uint32_t nAM_idx  = base_h + off * 6 + 1;   // A→M
-	uint32_t nMC_idx  = base_h + off * 6 + 2;   // M→C
-	uint32_t nCM_idx  = base_h + off * 6 + 3;   // C→M
-	uint32_t nDM_idx  = base_h + off * 6 + 4;   // D→M
-	uint32_t nMD_idx  = base_h + off * 6 + 5;   // M→D
+		edges[eMA_idx].halfedge_idx = nMA_idx; edges[eMA_idx].id = eMA_idx; edges[eMA_idx].sharp = false;
+		edges[eMC_idx].halfedge_idx = nMC_idx; edges[eMC_idx].id = eMC_idx; edges[eMC_idx].sharp = false;
+		edges[eMD_idx].halfedge_idx = nMD_idx; edges[eMD_idx].id = eMD_idx; edges[eMD_idx].sharp = false;
 
-	uint32_t f2       = base_f + off * 2;        // face AMC
-	uint32_t f3       = base_f + off * 2 + 1;    // face MDC
+		faces[f2].halfedge_idx = nAM_idx; faces[f2].id = f2; faces[f2].boundary = false;
+		faces[f3].halfedge_idx = nMD_idx; faces[f3].id = f3; faces[f3].boundary = false;
 
-	// --- Create new vertex M at midpoint ---
-	vertices[vM].position = (vertices[vB].position + vertices[vC].position) * 0.5f;
-	vertices[vM].halfedge_idx = t_idx; // t becomes M→B after rewire
-	vertices[vM].id = vM;
+		halfedges[nMA_idx] = {vM,  hp_idx, nAM_idx, eMA_idx, f0,  nMA_idx};
+		halfedges[nAM_idx] = {vA,  nMC_idx, nMA_idx, eMA_idx, f2, nAM_idx};
+		halfedges[nMC_idx] = {vM,  hn_idx, nCM_idx, eMC_idx, f2, nMC_idx};
+		halfedges[nCM_idx] = {vC,  nMD_idx, nMC_idx, eMC_idx, f3, nCM_idx};
+		halfedges[nDM_idx] = {vD,  t_idx,  nMD_idx, eMD_idx, f1, nDM_idx};
+		halfedges[nMD_idx] = {vM,  tp_idx, nDM_idx, eMD_idx, f3, nMD_idx};
 
-	// --- Create 3 new edges ---
-	edges[eMA_idx].halfedge_idx = nMA_idx;
-	edges[eMA_idx].id = eMA_idx;
-	edges[eMA_idx].sharp = false;
+		halfedges[h_idx].next_idx  = nMA_idx;
+		halfedges[t_idx].vertex_idx = vM;
+		halfedges[t_idx].next_idx  = tn_idx;
+		halfedges[hn_idx].next_idx = nAM_idx;
+		halfedges[hn_idx].face_idx = f2;
+		halfedges[tn_idx].next_idx = nDM_idx;
+		halfedges[tp_idx].next_idx = nCM_idx;
+		halfedges[tp_idx].face_idx = f3;
 
-	edges[eMC_idx].halfedge_idx = nMC_idx;
-	edges[eMC_idx].id = eMC_idx;
-	edges[eMC_idx].sharp = false;
-
-	edges[eMD_idx].halfedge_idx = nMD_idx;
-	edges[eMD_idx].id = eMD_idx;
-	edges[eMD_idx].sharp = false;
-
-	// --- Create 2 new faces ---
-	faces[f2].halfedge_idx = nAM_idx;
-	faces[f2].id = f2;
-	faces[f2].boundary = false;
-
-	faces[f3].halfedge_idx = nMD_idx;
-	faces[f3].id = f3;
-	faces[f3].boundary = false;
-
-	// --- Create 6 new halfedges ---
-	// nMA: M→A (in face f0: ABM)
-	halfedges[nMA_idx].vertex_idx = vM;
-	halfedges[nMA_idx].next_idx = hp_idx;
-	halfedges[nMA_idx].twin_idx = nAM_idx;
-	halfedges[nMA_idx].edge_idx = eMA_idx;
-	halfedges[nMA_idx].face_idx = f0;
-	halfedges[nMA_idx].id = nMA_idx;
-
-	// nAM: A→M (in face f2: AMC)
-	halfedges[nAM_idx].vertex_idx = vA;
-	halfedges[nAM_idx].next_idx = nMC_idx;
-	halfedges[nAM_idx].twin_idx = nMA_idx;
-	halfedges[nAM_idx].edge_idx = eMA_idx;
-	halfedges[nAM_idx].face_idx = f2;
-	halfedges[nAM_idx].id = nAM_idx;
-
-	// nMC: M→C (in face f2: AMC)
-	halfedges[nMC_idx].vertex_idx = vM;
-	halfedges[nMC_idx].next_idx = hn_idx;
-	halfedges[nMC_idx].twin_idx = nCM_idx;
-	halfedges[nMC_idx].edge_idx = eMC_idx;
-	halfedges[nMC_idx].face_idx = f2;
-	halfedges[nMC_idx].id = nMC_idx;
-
-	// nCM: C→M (in face f3: MDC)
-	halfedges[nCM_idx].vertex_idx = vC;
-	halfedges[nCM_idx].next_idx = nMD_idx;
-	halfedges[nCM_idx].twin_idx = nMC_idx;
-	halfedges[nCM_idx].edge_idx = eMC_idx;
-	halfedges[nCM_idx].face_idx = f3;
-	halfedges[nCM_idx].id = nCM_idx;
-
-	// nDM: D→M (in face f1: MBD)
-	halfedges[nDM_idx].vertex_idx = vD;
-	halfedges[nDM_idx].next_idx = t_idx;
-	halfedges[nDM_idx].twin_idx = nMD_idx;
-	halfedges[nDM_idx].edge_idx = eMD_idx;
-	halfedges[nDM_idx].face_idx = f1;
-	halfedges[nDM_idx].id = nDM_idx;
-
-	// nMD: M→D (in face f3: MDC)
-	halfedges[nMD_idx].vertex_idx = vM;
-	halfedges[nMD_idx].next_idx = tp_idx;
-	halfedges[nMD_idx].twin_idx = nDM_idx;
-	halfedges[nMD_idx].edge_idx = eMD_idx;
-	halfedges[nMD_idx].face_idx = f3;
-	halfedges[nMD_idx].id = nMD_idx;
-
-	// --- Modify existing halfedges ---
-	// h (B→M, was B→C): update next
-	halfedges[h_idx].next_idx = nMA_idx;
-	// face stays f0, vertex stays vB, twin stays t_idx, edge stays idx
-
-	// t (M→B, was C→B): update vertex and next
-	halfedges[t_idx].vertex_idx = vM;
-	halfedges[t_idx].next_idx = tn_idx;
-	// face stays f1, twin stays h_idx, edge stays idx
-
-	// hn (C→A): move to face f2, update next
-	halfedges[hn_idx].next_idx = nAM_idx;
-	halfedges[hn_idx].face_idx = f2;
-
-	// hp (A→B): next stays h_idx (unchanged)
-
-	// tn (B→D): update next
-	halfedges[tn_idx].next_idx = nDM_idx;
-	// face stays f1
-
-	// tp (D→C): move to face f3, update next
-	halfedges[tp_idx].next_idx = nCM_idx;
-	halfedges[tp_idx].face_idx = f3;
-
-	// --- Update face halfedge pointers ---
-	faces[f0].halfedge_idx = h_idx;
-	faces[f1].halfedge_idx = t_idx;
-
-	// --- Update vertex halfedge pointers ---
-	// vC's halfedge might have been t_idx (C→B), but now t leaves from M
-	vertices[vC].halfedge_idx = nCM_idx;
-	// vB, vA, vD still have valid outgoing halfedges
+		faces[f0].halfedge_idx = h_idx;
+		faces[f1].halfedge_idx = t_idx;
+		vertices[vC].halfedge_idx = nCM_idx;
+	} while(0); }
 }
 
-//isotropic_remesh: improves mesh quality through local operations.
-// Do note that this requires a working implementation of EdgeSplit, EdgeFlip, and EdgeCollapse
 void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 	dim3 blockDim;
 	dim3 gridDim;
 
-	// Compute the mean edge length. This will be the "target length".
+	uint32_t nb = params.num_blocks; // 0 = auto (full parallelism)
+	// Helper lambdas: compute gridDim for edge/vertex kernels respecting nb
+	auto edge_grid = [&]() -> uint32_t {
+		return nb ? nb : (numEdges + blockDim.x - 1) / blockDim.x;
+	};
+	auto vert_grid = [&]() -> uint32_t {
+		return nb ? nb : (numVertices + blockDim.x - 1) / blockDim.x;
+	};
 
-	/**
-	 * 	1. 	Color mesh vertices such that no two adjacent vertices have the same color
-	 * 	2. 	Color mesh edges such that no two edges which share an incident vertex have the same color
-	 * 	3. 	For each edge color c_e}:
-	 * 		a. 	For each edge with color c_e:
-	 * 			i. 	Split edges much longer than the target length.
-	 * 				("much longer" means > target length * params.longer_factor)
-	 * 			ii.	Collapse edges much shorter than the target length.
-	 *	4.	For each color c_v:
-	 *		a. 	For each vertex of color c_v:
-	 *			i. 	Apply some tangential smoothing to the vertex positions.
-	 *				This means move every vertex in the plane of its normal,
-	 *				toward the centroid of its neighbors, by params.smoothing_step of
-	 *				the total distance (so, smoothing_step of 1 would move all the way,
-	 *				smoothing_step of 0 would not move). 
-	 *			ii.	Repeat the tangential smoothing part params.smoothing_iters times.
-	 *	5. Repeat steps 1-4 `num_iters` times.
-	 */
-
-	//NOTE: many of the steps in this function will be modifying the element
-	//      lists they are looping over. Take care to avoid use-after-free
-	//      or infinite-loop problems.
-
-	// Per-phase wall-time accumulators (ms). Each phase is bracketed by
-	// cudaDeviceSynchronize() so kernel launch latency is fully captured.
 	using clk = std::chrono::steady_clock;
 	auto t_total_begin = clk::now();
 	double ms_color = 0, ms_flip = 0, ms_split = 0, ms_collapse = 0, ms_smooth = 0;
@@ -1043,7 +815,8 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 	for (int t = 0; t < params.num_iters; t++) {
 		std::printf("iteration %d of remeshing\n", t);
 		blockDim = dim3(params.block_size);
-		gridDim = dim3((numEdges + blockDim.x - 1 ) / blockDim.x);
+		gridDim = dim3(edge_grid());
+
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
 		bool h_done = false;
 		cudaDeviceSynchronize(); auto _ts = clk::now();
@@ -1055,19 +828,16 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
-		
-		// color_mask holds color of corresponding edge
-		// get max color in color_mask
+
 		int* cuda_max_color = thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
 		int max_color;
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
-		
+
 		cudaDeviceSynchronize(); _ts = clk::now();
 		kernel_get_flip_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_op_mask);
 		CUDA_CHECK("get_flip_edges");
 		for (int c = 0; c <= max_color; c++) {
 			VPRINTF("Flipping edges of color %d\n", c);
-			// flips all edges with color c if flipping them increases regular-ness
 			kernel_flip_edge<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_color_mask, edge_op_mask, c);
 			CUDA_CHECK("flip_edge");
 		}
@@ -1079,7 +849,6 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		float avg_len = thrust::reduce(thrust::device, edge_lengths, edge_lengths + numEdges, 0.0f, thrust::plus<float>()) / std::max(1U, numEdges);
 		std::printf("average length is %f\n", avg_len);
 
-		// Recolor edges after flip (connectivity changed)
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
 		h_done = false;
 		cudaDeviceSynchronize(); _ts = clk::now();
@@ -1097,12 +866,10 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		kernel_get_split_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces, edge_lengths, numEdges, avg_len, params.split_factor, edge_op_mask);
 		CUDA_CHECK("get_split_edges");
 
-		// Compute prefix sum of op_mask to get per-edge offset
 		cudaMalloc(&split_offsets, sizeof(int) * numEdges);
 		thrust::exclusive_scan(thrust::device, edge_op_mask, edge_op_mask + numEdges, split_offsets);
 		CUDA_CHECK("exclusive_scan_split");
 
-		// Total number of splits = last offset + last op_mask value
 		int last_offset, last_mask;
 		cudaMemcpy(&last_offset, split_offsets + numEdges - 1, sizeof(int), cudaMemcpyDeviceToHost);
 		cudaMemcpy(&last_mask, edge_op_mask + numEdges - 1, sizeof(int), cudaMemcpyDeviceToHost);
@@ -1110,33 +877,27 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		std::printf("total splits = %d\n", total_splits);
 
 		if (total_splits > 0) {
-			// Compute new counts
 			uint32_t newV = numVertices + total_splits;
 			uint32_t newE = numEdges + total_splits * 3;
 			uint32_t newH = numHalfedges + total_splits * 6;
 			uint32_t newF = numFaces + total_splits * 2;
 
-			// Reallocate arrays to accommodate new elements
-			Mesh::Vertex* newVertices;
-			Mesh::Edge* newEdges;
+			Mesh::Vertex*   newVertices;
+			Mesh::Edge*     newEdges;
 			Mesh::Halfedge* newHalfedges;
-			Mesh::Face* newFaces;
-			cudaMalloc(&newVertices, sizeof(Mesh::Vertex) * newV);
-			cudaMalloc(&newEdges, sizeof(Mesh::Edge) * newE);
+			Mesh::Face*     newFaces;
+			cudaMalloc(&newVertices,  sizeof(Mesh::Vertex)   * newV);
+			cudaMalloc(&newEdges,     sizeof(Mesh::Edge)     * newE);
 			cudaMalloc(&newHalfedges, sizeof(Mesh::Halfedge) * newH);
-			cudaMalloc(&newFaces, sizeof(Mesh::Face) * newF);
-			cudaMemcpy(newVertices, cudaDeviceVertices, sizeof(Mesh::Vertex) * numVertices, cudaMemcpyDeviceToDevice);
-			cudaMemcpy(newEdges, cudaDeviceEdges, sizeof(Mesh::Edge) * numEdges, cudaMemcpyDeviceToDevice);
+			cudaMalloc(&newFaces,     sizeof(Mesh::Face)     * newF);
+			cudaMemcpy(newVertices,  cudaDeviceVertices,  sizeof(Mesh::Vertex)   * numVertices,  cudaMemcpyDeviceToDevice);
+			cudaMemcpy(newEdges,     cudaDeviceEdges,     sizeof(Mesh::Edge)     * numEdges,     cudaMemcpyDeviceToDevice);
 			cudaMemcpy(newHalfedges, cudaDeviceHalfedges, sizeof(Mesh::Halfedge) * numHalfedges, cudaMemcpyDeviceToDevice);
-			cudaMemcpy(newFaces, cudaDeviceFaces, sizeof(Mesh::Face) * numFaces, cudaMemcpyDeviceToDevice);
-			cudaFree(cudaDeviceVertices);
-			cudaFree(cudaDeviceEdges);
-			cudaFree(cudaDeviceHalfedges);
-			cudaFree(cudaDeviceFaces);
-			cudaDeviceVertices = newVertices;
-			cudaDeviceEdges = newEdges;
-			cudaDeviceHalfedges = newHalfedges;
-			cudaDeviceFaces = newFaces;
+			cudaMemcpy(newFaces,     cudaDeviceFaces,     sizeof(Mesh::Face)     * numFaces,     cudaMemcpyDeviceToDevice);
+			cudaFree(cudaDeviceVertices);  cudaDeviceVertices  = newVertices;
+			cudaFree(cudaDeviceEdges);     cudaDeviceEdges     = newEdges;
+			cudaFree(cudaDeviceHalfedges); cudaDeviceHalfedges = newHalfedges;
+			cudaFree(cudaDeviceFaces);     cudaDeviceFaces     = newFaces;
 
 			cuda_max_color = thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
 			cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
@@ -1150,48 +911,36 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 				cudaDeviceSynchronize();
 			}
 
-			// Update counts
-			numVertices = newV;
-			numEdges = newE;
+			numVertices  = newV;
+			numEdges     = newE;
 			numHalfedges = newH;
-			numFaces = newF;
+			numFaces     = newF;
 
-			// Reallocate edge-sized arrays for new count
-			cudaFree(edge_lengths);
-			cudaFree(edge_color_mask);
-			cudaFree(edge_op_mask);
-			cudaFree(edge_priorities);
-			cudaMalloc(&edge_lengths, sizeof(float) * numEdges);
-			cudaMalloc(&edge_color_mask, sizeof(int) * numEdges);
-			cudaMalloc(&edge_op_mask, sizeof(int) * numEdges);
-			// Regenerate edge priorities for new edges
+			cudaFree(edge_lengths);    cudaFree(edge_color_mask); cudaFree(edge_op_mask); cudaFree(edge_priorities);
+			cudaMalloc(&edge_lengths,    sizeof(float) * numEdges);
+			cudaMalloc(&edge_color_mask, sizeof(int)   * numEdges);
+			cudaMalloc(&edge_op_mask,    sizeof(int)   * numEdges);
 			std::vector<int> h_ep(numEdges);
 			for (uint32_t i = 0; i < numEdges; i++) h_ep[i] = rand();
 			cudaMalloc(&edge_priorities, sizeof(int) * numEdges);
 			cudaMemcpy(edge_priorities, h_ep.data(), sizeof(int) * numEdges, cudaMemcpyHostToDevice);
 
-			// Reallocate vertex-sized arrays for new count
-			cudaFree(vertex_color_mask);
-			cudaFree(vertex_pos);
-			cudaFree(vertex_normals);
-			cudaFree(vertex_priorities);
-			cudaMalloc(&vertex_color_mask, sizeof(int) * numVertices);
-			cudaMalloc(&vertex_pos, sizeof(Vec3) * numVertices);
-			cudaMalloc(&vertex_normals, sizeof(Vec3) * numVertices);
+			cudaFree(vertex_color_mask); cudaFree(vertex_pos); cudaFree(vertex_normals); cudaFree(vertex_priorities);
+			cudaMalloc(&vertex_color_mask, sizeof(int)  * numVertices);
+			cudaMalloc(&vertex_pos,        sizeof(Vec3) * numVertices);
+			cudaMalloc(&vertex_normals,    sizeof(Vec3) * numVertices);
 			std::vector<int> h_vp(numVertices);
 			for (uint32_t i = 0; i < numVertices; i++) h_vp[i] = rand();
 			cudaMalloc(&vertex_priorities, sizeof(int) * numVertices);
 			cudaMemcpy(vertex_priorities, h_vp.data(), sizeof(int) * numVertices, cudaMemcpyHostToDevice);
 
-			// Update gridDim for new edge count
-			gridDim = dim3((numEdges + blockDim.x - 1) / blockDim.x);
+			gridDim = dim3(edge_grid());
 		}
 		cudaFree(split_offsets);
 		split_offsets = NULL;
 		ms_split += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
 		// === COLLAPSE ===
-		// Recompute edge lengths (split may have changed the mesh)
 		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, edge_lengths, numEdges);
 		CUDA_CHECK("get_edge_lengths_2");
 
@@ -1199,7 +948,6 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		CUDA_CHECK("reduce_avg_len_2");
 		std::printf("average length after split is %f\n", avg_len);
 
-		// Recolor edges (split changed connectivity)
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
 		h_done = false;
 		cudaDeviceSynchronize(); _ts = clk::now();
@@ -1227,9 +975,9 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		}
 		ms_collapse += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
-		gridDim = dim3((numVertices + blockDim.x - 1) / blockDim.x);
-		// Color vertices using Jones-Plassmann algorithm
-		cudaMemset(vertex_color_mask, -1, sizeof(int) * numVertices); // reset all to -1 (uncolored)
+		// === SMOOTH ===
+		gridDim = dim3(vert_grid());
+		cudaMemset(vertex_color_mask, -1, sizeof(int) * numVertices);
 		h_done = false;
 		cudaDeviceSynchronize(); _ts = clk::now();
 		while (!h_done) {
@@ -1248,26 +996,18 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		cudaDeviceSynchronize(); _ts = clk::now();
 		for (int i = 0; i < params.smoothing_iters; i++) {
 			VPRINTF("iteration %d of vertex smoothing\n", i);
-			// Initialize vertex_pos with current positions so vertices that
-			// don't get smoothed (invalid, isolated, count==0) don't get
-			// uninitialized garbage copied back by update_vertex_pos.
 			kernel_init_vertex_pos<<<gridDim, blockDim>>>(cudaDeviceVertices, vertex_pos, numVertices);
 			CUDA_CHECK("init_vertex_pos");
-			// Compute per-vertex area-weighted normals for tangent-plane
-			// projection in smooth_vertex. Must be recomputed each smoothing
-			// iter because vertex positions and connectivity change.
 			kernel_get_vertex_normals<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceHalfedges,
 				cudaDeviceFaces, vertex_normals, numVertices, numHalfedges);
 			CUDA_CHECK("get_vertex_normals");
 			for (int c = 0; c <= max_color; c++) {
-				// smooth all vertices of each color
 				VPRINTF("Smoothing vertices of color %d\n", c);
 				kernel_smooth_vertex<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceEdges,
 					cudaDeviceHalfedges, cudaDeviceFaces, vertex_color_mask, vertex_normals, vertex_pos,
 					numVertices, numEdges, numHalfedges, numFaces, params.smoothing_step, c);
 				CUDA_CHECK("smooth_vertex");
 			}
-			// update vertex positions
 			kernel_update_vertex_pos<<<gridDim, blockDim>>>(cudaDeviceVertices, vertex_pos, numVertices);
 			CUDA_CHECK("update_vertex_pos");
 		}

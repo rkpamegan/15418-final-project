@@ -183,24 +183,47 @@ int main() {
 	delete remesher;
 	delete mesh;
 
-	uint32_t block_sizes[] = {32, 64, 128, 256, 512, 1024};
-	const char* test_files[] = {"tests/test1.txt", "tests/test2.txt", "tests/test3.txt"};
-	for (const char* fname : test_files) {
-		std::printf("\n=== Speedup Test: varying block_size on %s ===\n", fname);
-		std::printf("%-12s %12s\n", "block_size", "total_ms");
-		for (uint32_t bs : block_sizes) {
-			cuda_clear_last_error();
-			srand(42);
-			Mesh* m = mesh_from_file(fname);
-			if (!m) { std::printf("failed to open %s\n", fname); break; }
-			CudaRemesher* r = new CudaRemesher();
-			r->setup(*m);
-			std::printf("--- block_size=%u ---\n", bs);
-			Isotropic_Remesh_Params p{ 1, 1.5f, 0.5f, 1, 0.5f, bs };
-			r->isotropic_remesh(p);
-			delete r;
-			delete m;
-		}
+	// === Strong Scaling: fix test1, vary num_blocks (block_size=32) ===
+	// num_blocks=0 means full auto parallelism (~6912/32 = 216 blocks for test1)
+	std::printf("\n=== Strong Scaling Test: test1.txt, block_size=32, varying num_blocks ===\n");
+	uint32_t strong_blocks[] = {1, 2, 4, 8, 16, 32, 64, 128, 0};
+	for (uint32_t nb : strong_blocks) {
+		cuda_clear_last_error();
+		srand(42);
+		Mesh* m = mesh_from_file("tests/test1.txt");
+		if (!m) { std::printf("failed to open tests/test1.txt\n"); break; }
+		CudaRemesher* r = new CudaRemesher();
+		r->setup(*m);
+		std::printf("--- num_blocks=%u (total_threads=%u) ---\n", nb, nb == 0 ? 6912u : nb * 32u);
+		Isotropic_Remesh_Params p{ 1, 1.5f, 0.5f, 1, 0.5f, 32, nb };
+		r->isotropic_remesh(p);
+		delete r;
+		delete m;
+	}
+
+	// === Weak Scaling: fix 9 edges/thread, scale both mesh and threads ===
+	// test3: 288 edges, 1 block (32 threads) → 9 edges/thread
+	// test2: 1728 edges (6x), 6 blocks (192 threads, 6x) → 9 edges/thread
+	// test1: 6912 edges (24x), 24 blocks (768 threads, 24x) → 9 edges/thread
+	// Ideal result: same wall time for all three
+	std::printf("\n=== Weak Scaling Test: 9 edges/thread ===\n");
+	struct { const char* file; uint32_t nb; } weak_tests[] = {
+		{"tests/test3.txt",  1},
+		{"tests/test2.txt",  6},
+		{"tests/test1.txt", 24},
+	};
+	for (auto& wt : weak_tests) {
+		cuda_clear_last_error();
+		srand(42);
+		Mesh* m = mesh_from_file(wt.file);
+		if (!m) { std::printf("failed to open %s\n", wt.file); break; }
+		CudaRemesher* r = new CudaRemesher();
+		r->setup(*m);
+		std::printf("--- %s, num_blocks=%u (total_threads=%u) ---\n", wt.file, wt.nb, wt.nb * 32u);
+		Isotropic_Remesh_Params p{ 1, 1.5f, 0.5f, 1, 0.5f, 32, wt.nb };
+		r->isotropic_remesh(p);
+		delete r;
+		delete m;
 	}
 
 	return 0;

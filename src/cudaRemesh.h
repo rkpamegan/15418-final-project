@@ -9,6 +9,7 @@ struct Isotropic_Remesh_Params {
     uint32_t smoothing_iters; //how many tangential smoothing iterations to run
     float smoothing_step; //amount to interpolate vertex positions toward their centroid each smoothing step
     uint32_t block_size = 256; //CUDA threads per block
+    uint32_t num_blocks = 0;   //CUDA blocks (0 = auto: ceil(N/block_size))
 };
 
 void cuda_clear_last_error();
