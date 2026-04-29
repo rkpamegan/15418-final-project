@@ -184,7 +184,7 @@ int main() {
 	delete mesh;
 
 	uint32_t block_sizes[] = {32, 64, 128, 256, 512, 1024};
-	const char* test_files[] = {"tests/test1.txt", "tests/test2.txt"};
+	const char* test_files[] = {"tests/test1.txt", "tests/test2.txt", "tests/test3.txt"};
 	for (const char* fname : test_files) {
 		std::printf("\n=== Speedup Test: varying block_size on %s ===\n", fname);
 		std::printf("%-12s %12s\n", "block_size", "total_ms");
