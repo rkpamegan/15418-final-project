@@ -189,6 +189,7 @@ int main() {
 	uint32_t block_sizes[] = {32, 64, 128, 256, 512, 1024};
 	for (uint32_t bs : block_sizes) {
 		cuda_clear_last_error(); // clear any stale error from previous destructor
+		srand(42); // fix seed so each run uses the same coloring priorities
 		Mesh* m = mesh_from_file("tests/test1.txt");
 		if (!m) { std::printf("failed to open tests/test1.txt\n"); break; }
 		CudaRemesher* r = new CudaRemesher();
