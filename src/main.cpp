@@ -1,6 +1,7 @@
 #include "mesh.h"
 #include "cudaRemesh.h"
 
+#include <cuda_runtime.h>
 #include <stdio.h>
 #include <iostream>
 #include <fstream>
