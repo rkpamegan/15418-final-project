@@ -35,5 +35,5 @@ class CudaRemesher {
 
         void setup(Mesh &mesh);
         
-        void isotropic_remesh(Isotropic_Remesh_Params const &params);
+        void isotropic_remesh(Isotropic_Remesh_Params const &params, bool verbose=false);
 };

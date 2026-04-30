@@ -1,6 +1,6 @@
 #include "mesh.h"
 #include "vec3.h"
-
+#include <iostream>
 // void Remesher::setup(Mesh &_mesh) {
 // 	mesh = &_mesh;
 
@@ -50,17 +50,92 @@ uint32_t Mesh::vertex_degree(uint32_t v) {
 }
 
 float Mesh::edge_length(uint32_t e) {
-	return 0.0f;
+	uint32_t v1 = halfedges[edges[e].halfedge_idx].vertex_idx;
+	uint32_t v2 = halfedges[halfedges[edges[e].halfedge_idx].twin_idx].vertex_idx;
+	return (vertices[v1].position - vertices[v2].position).norm();
 }
 
-void Mesh::flip_edge(uint32_t e) { }
+void Mesh::flip_edge(uint32_t e) {
+	uint32_t h_idx = edges[e].halfedge_idx;
+	if (h_idx == INVALID_IDX) return;
+	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return;
+	uint32_t t_idx = halfedges[h_idx].twin_idx;
+	if (t_idx == INVALID_IDX) return; // boundary edge
+	if (halfedges[t_idx].vertex_idx == INVALID_IDX) return;
+
+	// Gather the 6 halfedges
+	uint32_t hn_idx = halfedges[h_idx].next_idx;   // h_next
+	uint32_t hp_idx = halfedges[hn_idx].next_idx;   // h_prev (= h_next.next)
+	uint32_t tn_idx = halfedges[t_idx].next_idx;    // t_next
+	uint32_t tp_idx = halfedges[tn_idx].next_idx;   // t_prev (= t_next.next)
+
+	// The 4 vertices
+	uint32_t v0 = halfedges[h_idx].vertex_idx;
+	uint32_t v1 = halfedges[t_idx].vertex_idx;
+	uint32_t v2 = halfedges[hp_idx].vertex_idx;
+	uint32_t v3 = halfedges[tp_idx].vertex_idx;
+
+	// The 2 faces
+	uint32_t f0 = halfedges[h_idx].face_idx;
+	uint32_t f1 = halfedges[t_idx].face_idx;
+
+	// --- Rewire ---
+	// After flip:
+	//   Face f0: h(v2->v3) -> t_prev(v3->v1) -> h_next(v1->v2)
+	//   Face f1: t(v3->v2) -> h_prev(v2->v0) -> t_next(v0->v3)
+
+	// Update vertices of h and t
+	halfedges[h_idx].vertex_idx = v2;
+	halfedges[t_idx].vertex_idx = v3;
+
+	// Update next pointers
+	halfedges[h_idx].next_idx = tp_idx;
+	halfedges[tp_idx].next_idx = hn_idx;
+	halfedges[hn_idx].next_idx = h_idx;
+
+	halfedges[t_idx].next_idx = hp_idx;
+	halfedges[hp_idx].next_idx = tn_idx;
+	halfedges[tn_idx].next_idx = t_idx;
+
+	// Update face assignments (t_prev moves to f0, h_prev moves to f1)
+	halfedges[h_idx].face_idx = f0;
+	halfedges[tp_idx].face_idx = f0;
+	halfedges[hn_idx].face_idx = f0;
+
+	halfedges[t_idx].face_idx = f1;
+	halfedges[hp_idx].face_idx = f1;
+	halfedges[tn_idx].face_idx = f1;
+
+	// Update face halfedge pointers
+	faces[f0].halfedge_idx = h_idx;
+	faces[f1].halfedge_idx = t_idx;
+
+	// Update vertex halfedge pointers (v0 and v1 might have pointed to h or t)
+	vertices[v0].halfedge_idx = tn_idx;
+	vertices[v1].halfedge_idx = hn_idx;
+	vertices[v2].halfedge_idx = h_idx;
+	vertices[v3].halfedge_idx = t_idx;
+}
+
 void Mesh::flip_edges() {
 	for (uint32_t e = 0; e < edges.size(); e++) {
 		uint32_t v1 = halfedges[edges[e].halfedge_idx].vertex_idx;
 		uint32_t v2 = halfedges[halfedges[edges[e].halfedge_idx].twin_idx].vertex_idx;
 
-		uint32_t v3 = halfedges[halfedges[edges[e].halfedge_idx].next_idx];
-		uint32_t v4 = halfedges[halfedges[halfedges[edges[e].halfedge_idx].twin_idx].next_idx];
+		uint32_t v3 = halfedges[halfedges[edges[e].halfedge_idx].next_idx].vertex_idx;
+		uint32_t v4 = halfedges[halfedges[halfedges[edges[e].halfedge_idx].twin_idx].next_idx].vertex_idx;
+
+		int deg1 = vertex_degree(v1);
+		int deg2 = vertex_degree(v2);
+		int deg3 = vertex_degree(v3);
+		int deg4 = vertex_degree(v4);
+	
+		int dev1 = abs(deg1 - 6) + abs(deg2 - 6) + abs(deg3 - 6) + abs(deg4 - 6);
+		int dev2 = abs(deg1 - 1 - 6) + abs(deg2 - 1 - 6) + abs(deg3 + 1 - 6) + abs(deg4 + 1 - 6);
+
+		if (dev2 < dev1) {
+			flip_edge(e);
+		}
 	}
 }
 
@@ -217,28 +292,152 @@ void Mesh::split_edge(uint32_t e) {
 	// vB, vA, vD still have valid outgoing halfedges
 }
 
-void Mesh::split_edges(float avg_len, float split_factor) {
+uint32_t Mesh::split_edges(float avg_len, float split_factor) {
 	uint32_t num_edges = edges.size();
+	uint32_t count = 0;
 	for (uint32_t e = 0; e < num_edges; e++) {
 		float length = edge_length(e);
 
-		if (length > avg_len * split_factor) split_edge(e);
+		if (length > avg_len * split_factor) {
+			split_edge(e);
+			count++;
+		}
 	}
+	return count;
 }
 
-uint32_t Mesh::collapse_edge(uint32_t e) {
-	return 0;
+void Mesh::collapse_edge(uint32_t e) {
+	uint32_t h_idx = edges[e].halfedge_idx;
+	if (h_idx == INVALID_IDX) return;
+	if (halfedges[h_idx].vertex_idx == INVALID_IDX) return;
+	uint32_t t_idx = halfedges[h_idx].twin_idx;
+	if (t_idx == INVALID_IDX) return; // boundary edge
+	if (halfedges[t_idx].vertex_idx == INVALID_IDX) return;
+
+	// 6 halfedges of the two triangles
+	uint32_t hn_idx = halfedges[h_idx].next_idx;   // C→A
+	if (hn_idx == INVALID_IDX) return;
+	uint32_t hp_idx = halfedges[hn_idx].next_idx;   // A→B
+	if (hp_idx == INVALID_IDX) return;
+	uint32_t tn_idx = halfedges[t_idx].next_idx;    // B→D
+	if (tn_idx == INVALID_IDX) return;
+	uint32_t tp_idx = halfedges[tn_idx].next_idx;   // D→C
+	if (tp_idx == INVALID_IDX) return;
+	// If any of these inner halfedges was invalidated by a prior collapse this kernel,
+	// our pre-collapse view is stale; skip to avoid corrupting connectivity further.
+	if (halfedges[hn_idx].vertex_idx == INVALID_IDX) return;
+	if (halfedges[hp_idx].vertex_idx == INVALID_IDX) return;
+	if (halfedges[tn_idx].vertex_idx == INVALID_IDX) return;
+	if (halfedges[tp_idx].vertex_idx == INVALID_IDX) return;
+
+	// 4 vertices
+	uint32_t vB = halfedges[h_idx].vertex_idx;
+	uint32_t vC = halfedges[t_idx].vertex_idx;
+	uint32_t vA = halfedges[hp_idx].vertex_idx;
+	uint32_t vD = halfedges[tp_idx].vertex_idx;
+	if (vA == INVALID_IDX || vB == INVALID_IDX || vC == INVALID_IDX || vD == INVALID_IDX) return;
+
+	// 2 faces to remove
+	uint32_t f0 = halfedges[h_idx].face_idx;
+	uint32_t f1 = halfedges[t_idx].face_idx;
+
+	// Edges on the boundary of the diamond (to be merged)
+	uint32_t ehn = halfedges[hn_idx].edge_idx; // edge C-A
+	uint32_t ehp = halfedges[hp_idx].edge_idx; // edge A-B
+	uint32_t etn = halfedges[tn_idx].edge_idx; // edge B-D
+	uint32_t etp = halfedges[tp_idx].edge_idx; // edge D-C
+
+	// Twin halfedges of the 4 outer halfedges
+	uint32_t hn_twin = halfedges[hn_idx].twin_idx;
+	uint32_t hp_twin = halfedges[hp_idx].twin_idx;
+	uint32_t tn_twin = halfedges[tn_idx].twin_idx;
+	uint32_t tp_twin = halfedges[tp_idx].twin_idx;
+
+	// Move B to midpoint of B and C
+	vertices[vB].position = (vertices[vB].position + vertices[vC].position) * 0.5f;
+
+	// Rewire all halfedges that pointed to C → now point to B
+	// Walk around C and redirect
+	uint32_t start_he = vertices[vC].halfedge_idx;
+	if (start_he != INVALID_IDX && halfedges[start_he].vertex_idx == vC) {
+		uint32_t he = start_he;
+		int cguard = 0;
+		do {
+			halfedges[he].vertex_idx = vB;
+			uint32_t tw = halfedges[he].twin_idx;
+			if (tw == INVALID_IDX) break;
+			he = halfedges[tw].next_idx;
+			if (he == INVALID_IDX) break;
+			if (++cguard > 1024) break;
+		} while (he != start_he);
+	}
+
+	// Merge twin pairs: make outer halfedges twins of each other
+	// hn and hp's twins become direct twins (removing face f0)
+	if (hn_twin != INVALID_IDX) halfedges[hn_twin].twin_idx = hp_twin;
+	if (hp_twin != INVALID_IDX) halfedges[hp_twin].twin_idx = hn_twin;
+	// Merge one edge: keep ehp, mark ehn as invalid.
+	// IMPORTANT: edges[ehp].halfedge_idx may still point to hp_idx (now invalid).
+	// Redirect it to a surviving halfedge of this edge.
+	if (hn_twin != INVALID_IDX) halfedges[hn_twin].edge_idx = ehp;
+	if (hn_twin != INVALID_IDX)      edges[ehp].halfedge_idx = hn_twin;
+	else if (hp_twin != INVALID_IDX) edges[ehp].halfedge_idx = hp_twin;
+	else                              edges[ehp].halfedge_idx = INVALID_IDX;
+	edges[ehn].halfedge_idx = INVALID_IDX;
+
+	// tn and tp's twins become direct twins (removing face f1)
+	if (tn_twin != INVALID_IDX) halfedges[tn_twin].twin_idx = tp_twin;
+	if (tp_twin != INVALID_IDX) halfedges[tp_twin].twin_idx = tn_twin;
+	// Merge one edge: keep etn, mark etp as invalid.
+	// edges[etn].halfedge_idx may still point to tn_idx (now invalid). Redirect.
+	if (tp_twin != INVALID_IDX) halfedges[tp_twin].edge_idx = etn;
+	if (tn_twin != INVALID_IDX)      edges[etn].halfedge_idx = tn_twin;
+	else if (tp_twin != INVALID_IDX) edges[etn].halfedge_idx = tp_twin;
+	else                              edges[etn].halfedge_idx = INVALID_IDX;
+	edges[etp].halfedge_idx = INVALID_IDX;
+
+	// Mark the collapsed edge as invalid
+	edges[e].halfedge_idx = INVALID_IDX;
+
+	// Mark vertex C as invalid
+	vertices[vC].halfedge_idx = INVALID_IDX;
+
+	// Mark the 6 inner halfedges as invalid
+	halfedges[h_idx].vertex_idx = INVALID_IDX;
+	halfedges[t_idx].vertex_idx = INVALID_IDX;
+	halfedges[hn_idx].vertex_idx = INVALID_IDX;
+	halfedges[hp_idx].vertex_idx = INVALID_IDX;
+	halfedges[tn_idx].vertex_idx = INVALID_IDX;
+	halfedges[tp_idx].vertex_idx = INVALID_IDX;
+
+	// Mark the 2 faces as invalid
+	faces[f0].halfedge_idx = INVALID_IDX;
+	faces[f1].halfedge_idx = INVALID_IDX;
+
+	// Update vertex halfedge pointers for A, B, D
+	// Convention: vertex.halfedge must be an outgoing halfedge (halfedges[h].vertex_idx == that vertex).
+	// hn_twin source = A; hp_twin source = B; tn_twin source = D; tp_twin source = C (rewritten to B).
+	vertices[vA].halfedge_idx = (hn_twin != INVALID_IDX) ? hn_twin : hp_twin;
+	vertices[vD].halfedge_idx = (tn_twin != INVALID_IDX) ? tn_twin : tp_twin;
+	vertices[vB].halfedge_idx = (hp_twin != INVALID_IDX) ? hp_twin : tp_twin;
 }
+
 void Mesh::collapse_edges(float avg_len, float collapse_factor) {
-	uint32_t num_edges = edges.size();
 	uint32_t e = 0;
-	while (e < num_edges) {
-		float length = edge_length(e);
+	while (e < edges.size()) {
+		uint32_t h_idx = edges[e].halfedge_idx;
+		if (h_idx == INVALID_IDX) { e++; continue; }
+		if (halfedges[h_idx].vertex_idx == INVALID_IDX) { e++; continue; }
+		uint32_t t_idx = halfedges[h_idx].twin_idx;
+		if (t_idx == INVALID_IDX) { e++; continue; } // boundary edge
+		if (halfedges[t_idx].vertex_idx == INVALID_IDX) { e++; continue; }
+		if (faces[halfedges[h_idx].face_idx].boundary) { e++; continue; }
+		if (faces[halfedges[t_idx].face_idx].boundary) { e++; continue; }
 
+		float length = edge_length(e);
 		if (length < avg_len * collapse_factor)
 		{
-			uint32_t num_collapsed = collapse_edge(e);
-			num_edges -= num_collapsed;
+			collapse_edge(e);
 		} else {
 			e++;
 		}
@@ -247,6 +446,7 @@ void Mesh::collapse_edges(float avg_len, float collapse_factor) {
 
 void Mesh::smooth_vertices(std::vector<Vec3>& vertex_pos, std::vector<Vec3>& vertex_normals, float smoothing_factor) {
 	for (uint32_t i = 0; i < vertices.size(); i++) {
+		printf("%u\n", i);
 		Mesh::Vertex v = vertices[i];
 
 		Vec3 center;
@@ -258,6 +458,7 @@ void Mesh::smooth_vertices(std::vector<Vec3>& vertex_pos, std::vector<Vec3>& ver
 		uint32_t curr_idx = h_idx;
 		
 		uint32_t count = 0;
+		int sguard = 0;
 		do {
 			Mesh::Halfedge h = halfedges[curr_idx];
 			
@@ -271,6 +472,7 @@ void Mesh::smooth_vertices(std::vector<Vec3>& vertex_pos, std::vector<Vec3>& ver
 			
 			curr_idx = halfedges[tw].next_idx;
 			if (curr_idx == INVALID_IDX) break;
+			if (++sguard > 1024) break;
 		} while (curr_idx != h_idx);
 		
 		if (count == 0) return;
@@ -284,12 +486,12 @@ void Mesh::smooth_vertices(std::vector<Vec3>& vertex_pos, std::vector<Vec3>& ver
 }
 
 void Mesh::get_vertex_normals(std::vector<Vec3>& vertex_normals) {
-	for (uint32_t i = 0; i < vertices.size(); i++) {
+	for (uint32_t v = 0; v < vertices.size(); v++) {
 		Vec3 n = Vec3(0.0f, 0.0f, 0.0f);
-		Vec3 pi = vertices[i].position;
-		uint32_t h_idx = vertices[i].halfedge_idx;
-		if (h_idx == INVALID_IDX) { vertex_normals[i] = Vec3(0.0f, 0.0f, 0.0f); return; }
-		if (halfedges[h_idx].vertex_idx == INVALID_IDX) { vertex_normals[i] = Vec3(0.0f, 0.0f, 0.0f); return; }
+		Vec3 pi = vertices[v].position;
+		uint32_t h_idx = vertices[v].halfedge_idx;
+		if (h_idx == INVALID_IDX) { vertex_normals[v] = Vec3(0.0f, 0.0f, 0.0f); return; }
+		if (halfedges[h_idx].vertex_idx == INVALID_IDX) { vertex_normals[v] = Vec3(0.0f, 0.0f, 0.0f); return; }
 		
 		uint32_t curr_idx = h_idx;
 		int guard = 0;
@@ -313,11 +515,12 @@ void Mesh::get_vertex_normals(std::vector<Vec3>& vertex_normals) {
 			if (curr_idx == INVALID_IDX) break;
 			if (++guard > 1024) break;
 		} while (curr_idx != h_idx);
+		printf("%u h idx was = %u\n", v, h_idx);
 		
 		float len = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
 		if (len > 1e-12f) n = n * (1.0f / len);
 		else n = Vec3(0.0f, 0.0f, 0.0f);
-		vertex_normals[i] = n;
+		vertex_normals[v] = n;
 	}
 }
 
@@ -328,7 +531,7 @@ void Mesh::update_vertex_pos(std::vector<Vec3>& vertex_pos) {
 }
 
 //isotropic_remesh: improves mesh quality through local operations.
-void Mesh::isotropic_remesh(Isotropic_Remesh_Params const &params) {
+void Mesh::isotropic_remesh(Isotropic_Remesh_Params const &params, bool verbose) {
 	/**
 	 * 	1.	Split edges much longer than the target length.
 	 * 			("much longer" means > target length * params.split_factor)
@@ -348,26 +551,34 @@ void Mesh::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 	std::vector<Vec3> vertex_normals(vertices.size());
 	std::vector<Vec3> vertex_pos(vertices.size());
 	for (uint32_t t = 0; t < params.num_iters; t++) {
-		std::printf("iteration %d of remeshing\n", t);
+		if (verbose) std::printf("iteration %d of remeshing\n", t);
+		if (verbose) std::printf("flipping edges\n");
+		flip_edges();
+		
+		float avg_len = 0.0f;
 		for (uint32_t e = 0; e < edges.size(); e++) {
-			// flip_edge();
+			avg_len += edge_length(e) / edges.size();
 		}
-
-		uint32_t numEdges = edges.size(); 
-		for (uint32_t e = 0; e < numEdges; e++) {
-			// split_edge(e);
+		if (verbose) std::printf("splitting edges\n");
+		uint32_t num_splits = split_edges(avg_len, params.split_factor);
+		vertex_normals.resize(vertex_normals.size() + num_splits);
+		vertex_pos.resize(vertex_pos.size() + num_splits);
+		if (verbose) std::printf("collapsing edges\n");
+		avg_len = 0.0f;
+		for (uint32_t e = 0; e < edges.size(); e++) {
+			avg_len += edge_length(e) / edges.size();
 		}
-
-		// for (uint32_t e = 0; e < edges.size(); e++) {
-		// 	// collapse_edge(e);
+		collapse_edges(avg_len, params.collapse_factor);
+		std::optional<std::pair<uint32_t, std::string>> res = validate();
+		std::string res_str = res == std::nullopt ? "no problems" : res.value().second;
+		std::cout << res_str << std::endl;
+		
+		
+		// if (verbose) std::printf("smoothing vertices\n");
+		// for (uint32_t i = 0; i < params.smoothing_iters; i++) {
+		// 	get_vertex_normals(vertex_normals);
+		// 	smooth_vertices(vertex_pos, vertex_normals, params.smoothing_step);
+		// 	update_vertex_pos(vertex_pos);
 		// }
-
-
-
-		for (uint32_t i = 0; i < params.smoothing_iters; i++) {
-			get_vertex_normals(vertex_normals);
-			smooth_vertices(vertex_pos, vertex_normals, params.smoothing_step);
-			update_vertex_pos(vertex_pos);
-		}
 	}
 }

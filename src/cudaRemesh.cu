@@ -12,15 +12,29 @@
 #include "cudaRemesh.h"
 #include "vec3.h"
 
-#define CUDA_CHECK(label) do { \
+// #define CUDA_CHECK(label) do { \
+// 	cudaError_t _s = cudaDeviceSynchronize(); \
+// 	cudaError_t _l = cudaGetLastError(); \
+// 	if (_s != cudaSuccess || _l != cudaSuccess) { \
+// 		std::printf("[CUDA ERROR @ %s] sync=%s last=%s\n", label, cudaGetErrorString(_s), cudaGetErrorString(_l)); \
+// 		std::fflush(stdout); \
+// 		std::abort(); \
+// 	} else { \
+// 		std::printf("[ok @ %s]\n", label); std::fflush(stdout); \
+// 	} \
+// } while(0)
+#define CUDA_CHECK(label, verbose) do { \
 	cudaError_t _s = cudaDeviceSynchronize(); \
 	cudaError_t _l = cudaGetLastError(); \
 	if (_s != cudaSuccess || _l != cudaSuccess) { \
-		std::printf("[CUDA ERROR @ %s] sync=%s last=%s\n", label, cudaGetErrorString(_s), cudaGetErrorString(_l)); \
-		std::fflush(stdout); \
+		if (verbose) { \
+			std::printf("[CUDA ERROR @ %s] sync=%s last=%s\n", label, cudaGetErrorString(_s), cudaGetErrorString(_l)); \
+			std::fflush(stdout); \
+		} \
 		std::abort(); \
 	} else { \
-		std::printf("[ok @ %s]\n", label); std::fflush(stdout); \
+		if (verbose) \
+			std::printf("[ok @ %s]\n", label); std::fflush(stdout); \
 	} \
 } while(0)
 
@@ -1006,7 +1020,7 @@ __global__ void kernel_split_edge(
 }
 
 //isotropic_remesh: improves mesh quality through local operations.
-void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
+void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params, bool verbose) {
 	dim3 blockDim;
 	dim3 gridDim;
 
@@ -1034,7 +1048,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 	//      or infinite-loop problems.
 
 	for (uint32_t t = 0; t < params.num_iters; t++) {
-		std::printf("iteration %d of remeshing\n", t);
+		if (verbose) std::printf("iteration %d of remeshing\n", t);
 		blockDim = dim3(256);
 		gridDim = dim3((numEdges + blockDim.x - 1 ) / blockDim.x);
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
@@ -1044,7 +1058,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
 			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numHalfedges, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
-			CUDA_CHECK("color_edges_top");
+			CUDA_CHECK("color_edges_top", verbose);
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 		
@@ -1055,19 +1069,19 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 		
 		kernel_get_flip_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_op_mask);
-		CUDA_CHECK("get_flip_edges");
+		CUDA_CHECK("get_flip_edges", verbose);
 		for (int c = 0; c <= max_color; c++) {
-			std::printf("Flipping edges of color %d\n", c);
+			if (verbose) std::printf("Flipping edges of color %d\n", c);
 			// flips all edges with color c if flipping them increases regular-ness
 			kernel_flip_edge<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_color_mask, edge_op_mask, c);
-			CUDA_CHECK("flip_edge");
+			CUDA_CHECK("flip_edge", verbose);
 		}
 
 		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, edge_lengths, numEdges);
-		CUDA_CHECK("get_edge_lengths_1");
+		CUDA_CHECK("get_edge_lengths_1", verbose);
 
 		float avg_len = thrust::reduce(thrust::device, edge_lengths, edge_lengths + numEdges, 0.0f, thrust::plus<float>()) / std::max(1U, numEdges);
-		std::printf("average length is %f\n", avg_len);
+		if (verbose) std::printf("average length is %f\n", avg_len);
 
 		// Recolor edges after flip (connectivity changed)
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
@@ -1076,25 +1090,25 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
 			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numHalfedges, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
-			CUDA_CHECK("color_edges_pre_split");
+			CUDA_CHECK("color_edges_pre_split", verbose);
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 
 		// === SPLIT ===
 		kernel_get_split_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces, edge_lengths, numEdges, avg_len, params.split_factor, edge_op_mask);
-		CUDA_CHECK("get_split_edges");
+		CUDA_CHECK("get_split_edges", verbose);
 
 		// Compute prefix sum of op_mask to get per-edge offset
 		cudaMalloc(&split_offsets, sizeof(int) * numEdges);
 		thrust::exclusive_scan(thrust::device, edge_op_mask, edge_op_mask + numEdges, split_offsets);
-		CUDA_CHECK("exclusive_scan_split");
+		CUDA_CHECK("exclusive_scan_split", verbose);
 
 		// Total number of splits = last offset + last op_mask value
 		int last_offset, last_mask;
 		cudaMemcpy(&last_offset, split_offsets + numEdges - 1, sizeof(int), cudaMemcpyDeviceToHost);
 		cudaMemcpy(&last_mask, edge_op_mask + numEdges - 1, sizeof(int), cudaMemcpyDeviceToHost);
 		int total_splits = last_offset + last_mask;
-		std::printf("total splits = %d\n", total_splits);
+		if (verbose) std::printf("total splits = %d\n", total_splits);
 
 		if (total_splits > 0) {
 			// Compute new counts
@@ -1129,7 +1143,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 
 			for (int c = 0; c <= max_color; c++) {
-				std::printf("Splitting edges of color %d\n", c);
+				if (verbose) std::printf("Splitting edges of color %d\n", c);
 				kernel_split_edge<<<gridDim, blockDim>>>(
 					cudaDeviceVertices, cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces,
 					edge_color_mask, edge_op_mask, split_offsets,
@@ -1179,11 +1193,11 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		// === COLLAPSE ===
 		// Recompute edge lengths (split may have changed the mesh)
 		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, edge_lengths, numEdges);
-		CUDA_CHECK("get_edge_lengths_2");
+		CUDA_CHECK("get_edge_lengths_2", verbose);
 
 		avg_len = thrust::reduce(thrust::device, edge_lengths, edge_lengths + numEdges, 0.0f, thrust::plus<float>()) / std::max(1U, numEdges);
-		CUDA_CHECK("reduce_avg_len_2");
-		std::printf("average length after split is %f\n", avg_len);
+		CUDA_CHECK("reduce_avg_len_2", verbose);
+		if (verbose) std::printf("average length after split is %f\n", avg_len);
 
 		// Recolor edges (split changed connectivity)
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
@@ -1196,17 +1210,17 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		}
 
 		kernel_get_collapse_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces, edge_lengths, numEdges, avg_len, params.collapse_factor, edge_op_mask);
-		CUDA_CHECK("get_collapse_edges");
+		CUDA_CHECK("get_collapse_edges", verbose);
 
 		cuda_max_color = thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 
 		for (int c = 0; c <= max_color; c++) {
-			std::printf("Collapsing edges of color %d\n", c);
+			if (verbose) std::printf("Collapsing edges of color %d\n", c);
 			kernel_collapse_edge<<<gridDim, blockDim>>>(
 				cudaDeviceVertices, cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces,
 				edge_color_mask, edge_op_mask, numEdges, c);
-			CUDA_CHECK("collapse_edge");
+			CUDA_CHECK("collapse_edge", verbose);
 		}
 
 		gridDim = dim3((numVertices + blockDim.x - 1) / blockDim.x);
@@ -1217,37 +1231,37 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
 			kernel_color_vertices<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceHalfedges, numVertices, vertex_color_mask, vertex_priorities, d_coloring_done);
-			CUDA_CHECK("color_vertices");
+			CUDA_CHECK("color_vertices", verbose);
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 
 		cuda_max_color = thrust::max_element(thrust::device, vertex_color_mask, vertex_color_mask + numVertices);
-		CUDA_CHECK("max_element_v");
+		CUDA_CHECK("max_element_v", verbose);
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 		for (uint32_t i = 0; i < params.smoothing_iters; i++) {
-			std::printf("iteration %d of vertex smoothing\n", i);
+			if (verbose) std::printf("iteration %d of vertex smoothing\n", i);
 			// Initialize vertex_pos with current positions so vertices that
 			// don't get smoothed (invalid, isolated, count==0) don't get
 			// uninitialized garbage copied back by update_vertex_pos.
 			kernel_init_vertex_pos<<<gridDim, blockDim>>>(cudaDeviceVertices, vertex_pos, numVertices);
-			CUDA_CHECK("init_vertex_pos");
+			CUDA_CHECK("init_vertex_pos", verbose);
 			// Compute per-vertex area-weighted normals for tangent-plane
 			// projection in smooth_vertex. Must be recomputed each smoothing
 			// iter because vertex positions and connectivity change.
 			kernel_get_vertex_normals<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceHalfedges,
 				cudaDeviceFaces, vertex_normals, numVertices, numHalfedges);
-			CUDA_CHECK("get_vertex_normals");
+			CUDA_CHECK("get_vertex_normals", verbose);
 			for (int c = 0; c <= max_color; c++) {
 				// smooth all vertices of each color
-				std::printf("Smoothing vertices of color %d\n", c);
+				if (verbose) std::printf("Smoothing vertices of color %d\n", c);
 				kernel_smooth_vertex<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceEdges,
 					cudaDeviceHalfedges, cudaDeviceFaces, vertex_color_mask, vertex_normals, vertex_pos,
 					numVertices, numEdges, numHalfedges, numFaces, params.smoothing_step, c);
-				CUDA_CHECK("smooth_vertex");
+				CUDA_CHECK("smooth_vertex", verbose);
 			}
 			// update vertex positions
 			kernel_update_vertex_pos<<<gridDim, blockDim>>>(cudaDeviceVertices, vertex_pos, numVertices);
-			CUDA_CHECK("update_vertex_pos");
+			CUDA_CHECK("update_vertex_pos", verbose);
 		}
 	}
 }

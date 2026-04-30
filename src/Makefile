@@ -23,6 +23,7 @@ all: $(PROGRAM)
 
 clean:
 	rm -rf $(PROGRAM) $(OBJ_DIR)/*.o
+	rm remesh
 
 $(PROGRAM): $(CU_OBJS) $(CPP_OBJS)
 	$(CXX) $(CXX_FLAGS) -o $@ $^ $(LDFLAGS)

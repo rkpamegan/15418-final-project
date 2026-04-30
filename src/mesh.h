@@ -102,13 +102,13 @@ public:
     void flip_edge(uint32_t e);
     void flip_edges();
     void split_edge(uint32_t e);
-    void split_edges(float avg_len, float split_factor);
-    uint32_t collapse_edge(uint32_t e);
+    uint32_t split_edges(float avg_len, float split_factor);
+    void collapse_edge(uint32_t e);
     void collapse_edges(float avg_len, float collapse_factor);
     void smooth_vertices(std::vector<Vec3>& vertex_pos, std::vector<Vec3>& vertex_normals, float smoothing_factor);
     void get_vertex_normals(std::vector<Vec3>& vertex_normals);
     void update_vertex_pos(std::vector<Vec3>& vertex_pos);
-    void isotropic_remesh(Isotropic_Remesh_Params const &params);
+    void isotropic_remesh(Isotropic_Remesh_Params const &params, bool verbose=false);
 
     /**
      * Create a mesh from a list of vertices and a list of polygons composed of the vertices.
