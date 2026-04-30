@@ -30,10 +30,7 @@
 	cudaError_t _s = cudaDeviceSynchronize(); \
 	cudaError_t _l = cudaGetLastError(); \
 	if (_s != cudaSuccess || _l != cudaSuccess) { \
-		if (verbose) { \
-			std::printf("[CUDA ERROR @ %s] sync=%s last=%s\n", label, cudaGetErrorString(_s), cudaGetErrorString(_l)); \
-			std::fflush(stdout); \
-		} \
+		VPRINTF("[CUDA ERROR @ %s] sync=%s last=%s\n", label, cudaGetErrorString(_s), cudaGetErrorString(_l)); \
 		std::abort(); \
 	} else { \
 		VPRINTF("[ok @ %s]\n", label); \
@@ -818,8 +815,8 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		while (!h_done) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
-			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numHalfedges, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
-			CUDA_CHECK("color_edges_top", verbose);
+			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
+			CUDA_CHECK("color_edges_top");
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
@@ -830,19 +827,19 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 
 		cudaDeviceSynchronize(); _ts = clk::now();
 		kernel_get_flip_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_op_mask);
-		CUDA_CHECK("get_flip_edges", verbose);
+		CUDA_CHECK("get_flip_edges");
 		for (int c = 0; c <= max_color; c++) {
 			VPRINTF("Flipping edges of color %d\n", c);
 			kernel_flip_edge<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, cudaDeviceFaces, numEdges, edge_color_mask, edge_op_mask, c);
-			CUDA_CHECK("flip_edge", verbose);
+			CUDA_CHECK("flip_edge");
 		}
 		ms_flip += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
 		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, edge_lengths, numEdges);
-		CUDA_CHECK("get_edge_lengths_1", verbose);
+		CUDA_CHECK("get_edge_lengths_1");
 
 		float avg_len = thrust::reduce(thrust::device, edge_lengths, edge_lengths + numEdges, 0.0f, thrust::plus<float>()) / std::max(1U, numEdges);
-		if (verbose) std::printf("average length is %f\n", avg_len);
+		std::printf("average length is %f\n", avg_len);
 
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
 		h_done = false;
@@ -850,8 +847,8 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		while (!h_done) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
-			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numHalfedges, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
-			CUDA_CHECK("color_edges_pre_split", verbose);
+			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
+			CUDA_CHECK("color_edges_pre_split");
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
@@ -859,17 +856,17 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		// === SPLIT ===
 		cudaDeviceSynchronize(); _ts = clk::now();
 		kernel_get_split_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces, edge_lengths, numEdges, avg_len, params.split_factor, edge_op_mask);
-		CUDA_CHECK("get_split_edges", verbose);
+		CUDA_CHECK("get_split_edges");
 
 		cudaMalloc(&split_offsets, sizeof(int) * numEdges);
 		thrust::exclusive_scan(thrust::device, edge_op_mask, edge_op_mask + numEdges, split_offsets);
-		CUDA_CHECK("exclusive_scan_split", verbose);
+		CUDA_CHECK("exclusive_scan_split");
 
 		int last_offset, last_mask;
 		cudaMemcpy(&last_offset, split_offsets + numEdges - 1, sizeof(int), cudaMemcpyDeviceToHost);
 		cudaMemcpy(&last_mask, edge_op_mask + numEdges - 1, sizeof(int), cudaMemcpyDeviceToHost);
 		int total_splits = last_offset + last_mask;
-		if (verbose) std::printf("total splits = %d\n", total_splits);
+		std::printf("total splits = %d\n", total_splits);
 
 		if (total_splits > 0) {
 			uint32_t newV = numVertices + total_splits;
@@ -937,11 +934,11 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 
 		// === COLLAPSE ===
 		kernel_get_edge_lengths<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, edge_lengths, numEdges);
-		CUDA_CHECK("get_edge_lengths_2", verbose);
+		CUDA_CHECK("get_edge_lengths_2");
 
 		avg_len = thrust::reduce(thrust::device, edge_lengths, edge_lengths + numEdges, 0.0f, thrust::plus<float>()) / std::max(1U, numEdges);
-		CUDA_CHECK("reduce_avg_len_2", verbose);
-		if (verbose) std::printf("average length after split is %f\n", avg_len);
+		CUDA_CHECK("reduce_avg_len_2");
+		std::printf("average length after split is %f\n", avg_len);
 
 		cudaMemset(edge_color_mask, -1, sizeof(int) * numEdges);
 		h_done = false;
@@ -949,14 +946,14 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 		while (!h_done) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
-			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numHalfedges, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
+			kernel_color_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceVertices, numEdges, edge_color_mask, edge_priorities, d_coloring_done);
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
 		cudaDeviceSynchronize(); _ts = clk::now();
 		kernel_get_collapse_edges<<<gridDim, blockDim>>>(cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces, edge_lengths, numEdges, avg_len, params.collapse_factor, edge_op_mask);
-		CUDA_CHECK("get_collapse_edges", verbose);
+		CUDA_CHECK("get_collapse_edges");
 
 		cuda_max_color = thrust::max_element(thrust::device, edge_color_mask, edge_color_mask + numEdges);
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
@@ -966,7 +963,7 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			kernel_collapse_edge<<<gridDim, blockDim>>>(
 				cudaDeviceVertices, cudaDeviceEdges, cudaDeviceHalfedges, cudaDeviceFaces,
 				edge_color_mask, edge_op_mask, numEdges, c);
-			CUDA_CHECK("collapse_edge", verbose);
+			CUDA_CHECK("collapse_edge");
 		}
 		ms_collapse += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
@@ -979,12 +976,12 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			h_done = true;
 			cudaMemcpy(d_coloring_done, &h_done, sizeof(bool), cudaMemcpyHostToDevice);
 			kernel_color_vertices<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceHalfedges, numVertices, vertex_color_mask, vertex_priorities, d_coloring_done);
-			CUDA_CHECK("color_vertices", verbose);
+			CUDA_CHECK("color_vertices");
 			cudaMemcpy(&h_done, d_coloring_done, sizeof(bool), cudaMemcpyDeviceToHost);
 		}
 
 		cuda_max_color = thrust::max_element(thrust::device, vertex_color_mask, vertex_color_mask + numVertices);
-		CUDA_CHECK("max_element_v", verbose);
+		CUDA_CHECK("max_element_v");
 		cudaMemcpy(&max_color, cuda_max_color, sizeof(int), cudaMemcpyDeviceToHost);
 		ms_color += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 
@@ -995,16 +992,16 @@ void CudaRemesher::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 			CUDA_CHECK("init_vertex_pos");
 			kernel_get_vertex_normals<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceHalfedges,
 				cudaDeviceFaces, vertex_normals, numVertices, numHalfedges);
-			CUDA_CHECK("get_vertex_normals", verbose);
+			CUDA_CHECK("get_vertex_normals");
 			for (int c = 0; c <= max_color; c++) {
 				VPRINTF("Smoothing vertices of color %d\n", c);
 				kernel_smooth_vertex<<<gridDim, blockDim>>>(cudaDeviceVertices, cudaDeviceEdges,
 					cudaDeviceHalfedges, cudaDeviceFaces, vertex_color_mask, vertex_normals, vertex_pos,
 					numVertices, numEdges, numHalfedges, numFaces, params.smoothing_step, c);
-				CUDA_CHECK("smooth_vertex", verbose);
+				CUDA_CHECK("smooth_vertex");
 			}
 			kernel_update_vertex_pos<<<gridDim, blockDim>>>(cudaDeviceVertices, vertex_pos, numVertices);
-			CUDA_CHECK("update_vertex_pos", verbose);
+			CUDA_CHECK("update_vertex_pos");
 		}
 		ms_smooth += std::chrono::duration<double, std::milli>(clk::now() - _ts).count();
 	}

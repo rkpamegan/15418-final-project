@@ -168,9 +168,9 @@ int main(int argc, char* argv[]) {
 	std::string output_file;
 	uint32_t block_size = 256;
 	bool verbose = false;
+	bool test = false;
 
-
-	while ((opt = getopt(argc, argv, ":r:b:o:vh")) != -1) {
+	while ((opt = getopt(argc, argv, ":r:b:o:tvh")) != -1) {
 		switch(opt) {
 			case 'r':
 				remesher_type = std::string(optarg);
@@ -187,41 +187,47 @@ int main(int argc, char* argv[]) {
 			case 'v':
 				verbose = true;
 				break;
+			case 't':
+				test = true;
+				break;
 		}
 	}
 
-	if (optind >= argc) {
-		fprintf(stderr, "Error: missing mesh file\n");
-		help();
-		return 1;
-	}
+	if (!test) {
+		if (optind >= argc) {
+			fprintf(stderr, "Error: missing mesh file\n");
+			help();
+			return 1;
+		}
 
-	input_file = argv[optind];
-	Mesh* mesh = mesh_from_file(input_file);
-	
-	std::optional<std::pair<uint32_t, std::string>> res; 
-	if ((res = mesh->validate()) != std::nullopt) {
-		std::cout << "could not validate mesh before remesh: "  << res.value().second  << std::endl;
-		return 1;
-	}
-	Isotropic_Remesh_Params params{ num_iters, split_factor, collapse_factor, smoothing_iters, smoothing_step };
-	if (remesher_type.compare("cuda") == 0) {
-		CudaRemesher* remesher = new CudaRemesher();
-		remesher->setup(*mesh);
+		input_file = argv[optind];
+		Mesh* mesh = mesh_from_file(input_file);
 		
-		remesher->isotropic_remesh(params, verbose);
-	} else if (remesher_type.compare("seq") == 0) {
-		printf("numVertices = %lu\n", mesh->vertices.size());
-		mesh->isotropic_remesh(params, verbose);
-	} else {
-		std::cout << "'" << remesher_type << "' is an invalid remesher type. Options are 'seq' and 'cuda'." << std::endl;
-		help();
-		return 1;
-	}
-	
-	if ((res = mesh->validate()) != std::nullopt) {
-		std::cout << "could not validate mesh before remesh: "  << res.value().second  << std::endl;
-		return 1;
+		std::optional<std::pair<uint32_t, std::string>> res; 
+		if ((res = mesh->validate()) != std::nullopt) {
+			std::cout << "could not validate mesh before remesh: "  << res.value().second  << std::endl;
+			return 1;
+		}
+		Isotropic_Remesh_Params params{ num_iters, split_factor, collapse_factor, smoothing_iters, smoothing_step };
+		if (remesher_type.compare("cuda") == 0) {
+			CudaRemesher* remesher = new CudaRemesher();
+			remesher->setup(*mesh);
+			
+			remesher->isotropic_remesh(params);
+		} else if (remesher_type.compare("seq") == 0) {
+			printf("numVertices = %lu\n", mesh->vertices.size());
+			mesh->isotropic_remesh(params);
+		} else {
+			std::cout << "'" << remesher_type << "' is an invalid remesher type. Options are 'seq' and 'cuda'." << std::endl;
+			help();
+			return 1;
+		}
+		
+		if ((res = mesh->validate()) != std::nullopt) {
+			std::cout << "could not validate mesh before remesh: "  << res.value().second  << std::endl;
+			return 1;
+		}
+		return 0;
 	}
 
 	test_split_edge();

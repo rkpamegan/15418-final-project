@@ -112,7 +112,7 @@ public:
     void smooth_vertices(std::vector<Vec3>& vertex_pos, std::vector<Vec3>& vertex_normals, float smoothing_factor);
     void get_vertex_normals(std::vector<Vec3>& vertex_normals);
     void update_vertex_pos(std::vector<Vec3>& vertex_pos);
-    void isotropic_remesh(Isotropic_Remesh_Params const &params, bool verbose=false);
+    void isotropic_remesh(Isotropic_Remesh_Params const &params);
 
     /**
      * Create a mesh from a list of vertices and a list of polygons composed of the vertices.

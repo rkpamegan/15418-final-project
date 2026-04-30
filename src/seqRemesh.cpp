@@ -438,9 +438,8 @@ void Mesh::collapse_edges(float avg_len, float collapse_factor) {
 		if (length < avg_len * collapse_factor)
 		{
 			collapse_edge(e);
-		} else {
-			e++;
 		}
+		e++;
 	}
 }
 
@@ -531,7 +530,7 @@ void Mesh::update_vertex_pos(std::vector<Vec3>& vertex_pos) {
 }
 
 //isotropic_remesh: improves mesh quality through local operations.
-void Mesh::isotropic_remesh(Isotropic_Remesh_Params const &params, bool verbose) {
+void Mesh::isotropic_remesh(Isotropic_Remesh_Params const &params) {
 	/**
 	 * 	1.	Split edges much longer than the target length.
 	 * 			("much longer" means > target length * params.split_factor)
@@ -551,19 +550,19 @@ void Mesh::isotropic_remesh(Isotropic_Remesh_Params const &params, bool verbose)
 	std::vector<Vec3> vertex_normals(vertices.size());
 	std::vector<Vec3> vertex_pos(vertices.size());
 	for (uint32_t t = 0; t < params.num_iters; t++) {
-		if (verbose) std::printf("iteration %d of remeshing\n", t);
-		if (verbose) std::printf("flipping edges\n");
+		std::printf("iteration %d of remeshing\n", t);
+		std::printf("flipping edges\n");
 		flip_edges();
 		
 		float avg_len = 0.0f;
 		for (uint32_t e = 0; e < edges.size(); e++) {
 			avg_len += edge_length(e) / edges.size();
 		}
-		if (verbose) std::printf("splitting edges\n");
+		std::printf("splitting edges\n");
 		uint32_t num_splits = split_edges(avg_len, params.split_factor);
 		vertex_normals.resize(vertex_normals.size() + num_splits);
 		vertex_pos.resize(vertex_pos.size() + num_splits);
-		if (verbose) std::printf("collapsing edges\n");
+		std::printf("collapsing edges\n");
 		avg_len = 0.0f;
 		for (uint32_t e = 0; e < edges.size(); e++) {
 			avg_len += edge_length(e) / edges.size();
