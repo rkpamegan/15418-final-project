@@ -16,8 +16,12 @@ Mesh* mesh_from_file(std::string filename) {
 	if (!file.is_open()) {
 		return nullptr;
 	}
-	// maps id to position in respective element array
-	std::unordered_map< uint32_t, uint32_t> id_to_idx;
+	// per-type maps from raw id -> index in respective element array
+	// (raw ids overlap across element types so a single global map is wrong)
+	std::unordered_map<uint32_t, uint32_t> h_id_to_idx;
+	std::unordered_map<uint32_t, uint32_t> v_id_to_idx;
+	std::unordered_map<uint32_t, uint32_t> e_id_to_idx;
+	std::unordered_map<uint32_t, uint32_t> f_id_to_idx;
 	uint32_t h_idx = 0;
 	uint32_t v_idx = 0;
 	uint32_t e_idx = 0;
@@ -27,8 +31,11 @@ Mesh* mesh_from_file(std::string filename) {
 	std::string line;
 	// loop through all objects and store the raw ids of the elements they refer to
 	while (getline(file, line)) {
-		if (line.length() < 2) continue;
-		uint32_t id = std::stoul(line.substr(2, line.find("]")-1));
+		// skip blank / too-short lines (need at least "[x0]")
+		if (line.size() < 4 || line[0] != '[') continue;
+		size_t rbr = line.find(']');
+		if (rbr == std::string::npos || rbr <= 2) continue;
+		uint32_t id = std::stoul(line.substr(2, rbr - 2));
 		switch(line[1]) {
 			case 'h':
 			{
@@ -52,7 +59,7 @@ Mesh* mesh_from_file(std::string filename) {
 				h.face_idx = f_id;
 				h.id = h_idx++;
 				mesh->halfedges.emplace_back(h);
-				id_to_idx.insert({id, h.id});
+				h_id_to_idx.insert({id, h.id});
 				break;
 			}
 			case 'v':
@@ -73,7 +80,7 @@ Mesh* mesh_from_file(std::string filename) {
 				v.halfedge_idx = h_id;
 				v.id = v_idx++;
 				mesh->vertices.emplace_back(v);
-				id_to_idx.insert({id, v.id});
+				v_id_to_idx.insert({id, v.id});
 				break;
 			}
 			case 'e':
@@ -86,7 +93,7 @@ Mesh* mesh_from_file(std::string filename) {
 				e.halfedge_idx = h_id;
 				e.id = e_idx++;
 				mesh->edges.emplace_back(e);
-				id_to_idx.insert({id, e.id});
+				e_id_to_idx.insert({id, e.id});
 				break;
 			}
 			case 'f':
@@ -102,29 +109,34 @@ Mesh* mesh_from_file(std::string filename) {
 				f.halfedge_idx = h_id;
 				f.id = f_idx++;
 				mesh->faces.emplace_back(f);
-				id_to_idx.insert({id, f.id});
+				f_id_to_idx.insert({id, f.id});
 				break;
 			}
 		}
 	}
 	file.close();
 	
-	// loop through the elements again, using the map we created to change the raw IDs to vector indices within the mesh object
+	// loop through the elements again, using the per-type maps to change raw IDs to vector indices.
+	// Use references so the writes actually persist into the mesh.
 	for (size_t i = 0; i < mesh->halfedges.size(); i++) {
-		mesh->halfedges[i].twin_idx = id_to_idx[mesh->halfedges[i].twin_idx];
-		mesh->halfedges[i].next_idx = id_to_idx[mesh->halfedges[i].next_idx];
-		mesh->halfedges[i].vertex_idx = id_to_idx[mesh->halfedges[i].vertex_idx];
-		mesh->halfedges[i].edge_idx = id_to_idx[mesh->halfedges[i].edge_idx];
-		mesh->halfedges[i].face_idx = id_to_idx[mesh->halfedges[i].face_idx];
+		Mesh::Halfedge& h = mesh->halfedges[i];
+		h.twin_idx = h_id_to_idx[h.twin_idx];
+		h.next_idx = h_id_to_idx[h.next_idx];
+		h.vertex_idx = v_id_to_idx[h.vertex_idx];
+		h.edge_idx = e_id_to_idx[h.edge_idx];
+		h.face_idx = f_id_to_idx[h.face_idx];
 	}
 	for (size_t i = 0; i < mesh->vertices.size(); i++) {
-		mesh->vertices[i].halfedge_idx = id_to_idx[mesh->vertices[i].halfedge_idx];
+		Mesh::Vertex& v = mesh->vertices[i];
+		v.halfedge_idx = h_id_to_idx[v.halfedge_idx];
 	}
 	for (size_t i = 0; i < mesh->edges.size(); i++) {
-		mesh->edges[i].halfedge_idx = id_to_idx[mesh->edges[i].halfedge_idx];
+		Mesh::Edge& e = mesh->edges[i];
+		e.halfedge_idx = h_id_to_idx[e.halfedge_idx];
 	}
 	for (size_t i = 0; i < mesh->faces.size(); i++) {
-		mesh->faces[i].halfedge_idx = id_to_idx[mesh->faces[i].halfedge_idx];
+		Mesh::Face& f = mesh->faces[i];
+		f.halfedge_idx = h_id_to_idx[f.halfedge_idx];
 	}
 
 	return mesh;
@@ -211,8 +223,71 @@ int main(int argc, char* argv[]) {
 		std::cout << "could not validate mesh before remesh: "  << res.value().second  << std::endl;
 		return 1;
 	}
-	// test_converge();
 
-	free(mesh);
-    return 0;
+	test_split_edge();
+	test_collapse_edge();
+	test_converge();
+
+	// Run remesh on test1 dataset (large scale) to validate at full scale
+	std::printf("\n=== Loading tests/test1.txt ===\n");
+	Mesh* mesh = mesh_from_file("tests/test1.txt");
+	if (mesh == nullptr) {
+		std::printf("failed to open tests/test1.txt\n");
+		return 1;
+	}
+	std::printf("Loaded mesh: %zu verts, %zu edges, %zu halfedges, %zu faces\n",
+		mesh->vertices.size(), mesh->edges.size(), mesh->halfedges.size(), mesh->faces.size());
+
+	CudaRemesher* remesher = new CudaRemesher();
+	remesher->setup(*mesh);
+	Isotropic_Remesh_Params params{ 3, 1.5f, 0.5f, 1, 0.5f };
+	remesher->isotropic_remesh(params);
+
+	delete remesher;
+	delete mesh;
+
+	// === Strong Scaling: fix test1, vary num_blocks (block_size=32) ===
+	// num_blocks=0 means full auto parallelism (~6912/32 = 216 blocks for test1)
+	std::printf("\n=== Strong Scaling Test: test1.txt, block_size=32, varying num_blocks ===\n");
+	uint32_t strong_blocks[] = {1, 2, 4, 8, 16, 32, 64, 128, 0};
+	for (uint32_t nb : strong_blocks) {
+		cuda_clear_last_error();
+		srand(42);
+		Mesh* m = mesh_from_file("tests/test1.txt");
+		if (!m) { std::printf("failed to open tests/test1.txt\n"); break; }
+		CudaRemesher* r = new CudaRemesher();
+		r->setup(*m);
+		std::printf("--- num_blocks=%u (total_threads=%u) ---\n", nb, nb == 0 ? 6912u : nb * 32u);
+		Isotropic_Remesh_Params p{ 1, 1.5f, 0.5f, 1, 0.5f, 32, nb };
+		r->isotropic_remesh(p);
+		delete r;
+		delete m;
+	}
+
+	// === Weak Scaling: fix 9 edges/thread, scale both mesh and threads ===
+	// test3: 288 edges, 1 block (32 threads) → 9 edges/thread
+	// test2: 1728 edges (6x), 6 blocks (192 threads, 6x) → 9 edges/thread
+	// test1: 6912 edges (24x), 24 blocks (768 threads, 24x) → 9 edges/thread
+	// Ideal result: same wall time for all three
+	std::printf("\n=== Weak Scaling Test: 9 edges/thread ===\n");
+	struct { const char* file; uint32_t nb; } weak_tests[] = {
+		{"tests/test3.txt",  1},
+		{"tests/test2.txt",  6},
+		{"tests/test1.txt", 24},
+	};
+	for (auto& wt : weak_tests) {
+		cuda_clear_last_error();
+		srand(42);
+		Mesh* m = mesh_from_file(wt.file);
+		if (!m) { std::printf("failed to open %s\n", wt.file); break; }
+		CudaRemesher* r = new CudaRemesher();
+		r->setup(*m);
+		std::printf("--- %s, num_blocks=%u (total_threads=%u) ---\n", wt.file, wt.nb, wt.nb * 32u);
+		Isotropic_Remesh_Params p{ 1, 1.5f, 0.5f, 1, 0.5f, 32, wt.nb };
+		r->isotropic_remesh(p);
+		delete r;
+		delete m;
+	}
+
+	return 0;
 }

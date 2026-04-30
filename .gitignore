@@ -1,1 +1,6 @@
 .vscode
+
+# build artifacts
+*.o
+src/objs/
+src/remesh
