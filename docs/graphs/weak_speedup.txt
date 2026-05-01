@@ -1,0 +1,5 @@
+Weak Scaling (Effect of Problem Size on Speedup)
+Number of Edges,Speedup
+288,1728,6912
+actual,blue,-,1,2.38,2.85
+ideal,red,:,1,1,1

@@ -1,0 +1,9 @@
+Block Size Sweep (Effect of CUDA Thread Block Size on Runtime)
+Block size,Runtime (ms)
+32,64,128,256,512,1024
+test1 (total),blue,-,67.03,68.67,71.02,74.86,88.08,110.31
+test1 (color),blue,:,56.99,58.54,61.11,64.41,76.92,95.89 
+test2 (total),green,-,52.78,51.12,53.61,55.51,58.90,66.55
+test2 (color),green,:,44.25,42.62,44.80,46.45,49.69,54.80 
+test3 (total),red,-,26.42,26.54,26.66,25.99,25.71,25.67
+test3 (color),red,:,22.50,22.61,22.63,21.83,21.47,21.44

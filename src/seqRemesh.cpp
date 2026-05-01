@@ -1,37 +1,6 @@
 #include "mesh.h"
 #include "vec3.h"
 #include <iostream>
-// void Remesher::setup(Mesh &_mesh) {
-// 	mesh = &_mesh;
-
-// 	Vec3* vertex_pos = (Vec3*) malloc(sizeof(Vec3) * vertices.size());
-// 	Vec3* vertex_normals = (Vec3*) malloc(sizeof(Vec3) * vertices.size());
-
-// 	// // Generate random priorities for graph coloring
-// 	// std::vector<int> h_priorities(numVertices);
-// 	// for (uint32_t i = 0; i < numVertices; i++) {
-// 	// 	h_priorities[i] = rand();
-// 	// }
-// 	// cudaMalloc(&vertex_priorities, sizeof(int) * numVertices);
-// 	// cudaMemcpy(vertex_priorities, h_priorities.data(), sizeof(int) * numVertices, cudaMemcpyHostToDevice);
-
-// 	// // Generate random priorities for edge coloring
-// 	// std::vector<int> h_edge_priorities(numEdges);
-// 	// for (uint32_t i = 0; i < numEdges; i++) {
-// 	// 	h_edge_priorities[i] = rand();
-// 	// }
-// 	// cudaMalloc(&edge_priorities, sizeof(int) * numEdges);
-// 	// cudaMemcpy(edge_priorities, h_edge_priorities.data(), sizeof(int) * numEdges, cudaMemcpyHostToDevice);
-
-// 	// cudaMalloc(&d_coloring_done, sizeof(bool));
-
-// 	// cudaError_t err = cudaGetLastError();
-// 	// if (err != cudaSuccess) printf("error copying data: %s\n", cudaGetErrorString(err));
-
-// 	std::printf("setup: numVertices=%lu, numEdges=%lu, numHalfedges=%lu, numFaces=%lu\n",
-// 		vertices.size(), edges.size(), halfedges.size(), faces.size());
-// }
-
 
 uint32_t Mesh::vertex_degree(uint32_t v) {
 	uint32_t start_he = vertices[v].halfedge_idx;
@@ -514,7 +483,6 @@ void Mesh::get_vertex_normals(std::vector<Vec3>& vertex_normals) {
 			if (curr_idx == INVALID_IDX) break;
 			if (++guard > 1024) break;
 		} while (curr_idx != h_idx);
-		printf("%u h idx was = %u\n", v, h_idx);
 		
 		float len = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
 		if (len > 1e-12f) n = n * (1.0f / len);

@@ -1,0 +1,5 @@
+Weak Scaling (Effect of Problem Size on Runtime)
+Number of Edges,Runtime (ms)
+288,1728,6912
+total,blue,-,104.04,248.07,296.46
+color,red,:,91.99,222.97,265.97

@@ -208,7 +208,7 @@ int main(int argc, char* argv[]) {
 			std::cout << "could not validate mesh before remesh: "  << res.value().second  << std::endl;
 			return 1;
 		}
-		Isotropic_Remesh_Params params{ num_iters, split_factor, collapse_factor, smoothing_iters, smoothing_step };
+		Isotropic_Remesh_Params params{ num_iters, split_factor, collapse_factor, smoothing_iters, smoothing_step, block_size };
 		if (remesher_type.compare("cuda") == 0) {
 			CudaRemesher* remesher = new CudaRemesher();
 			remesher->setup(*mesh);
