@@ -450,24 +450,24 @@ std::ostream& operator << (std::ostream& outs, const Mesh::Face& f) {
 	return outs << f.to_string();
 }
 
-void Mesh::describe() const {
+void Mesh::describe(std::ostream& stream) const {
 	for (size_t i = 0; i < vertices.size(); i++)
 	{
-		std::cout << vertices[i] << std::endl;
+		stream << vertices[i] << std::endl;
 	}
 
 	for (size_t i = 0; i < edges.size(); i++)
 	{
-		std::cout << edges[i] << std::endl;
+		stream << edges[i] << std::endl;
 	}
 
 	for (size_t i = 0; i < halfedges.size(); i++)
 	{
-		std::cout << halfedges[i] << std::endl;
+		stream << halfedges[i] << std::endl;
 	}
 
 	for (size_t i = 0; i < faces.size(); i++)
 	{
-		std::cout << faces[i] << std::endl;
+		stream << faces[i] << std::endl;
 	}
 }

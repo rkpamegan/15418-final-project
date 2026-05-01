@@ -146,10 +146,10 @@ void help()
 {
 	printf("Usage: ./remesh [options] meshfile\n");
 	printf("Options:\n");
-	printf("    -r seq/cuda         Remesher type: 'seq' for sequential, 'cuda' for CUDA parallel. Default is 'seq'.\n");
-	printf("    -b t                CUDA block size of 't', i.e. 't' threads per block. Default is t=256\n");
-	printf("    -o filename         Output mesh description to 'filename'\n");
-	printf("    -v                  Verbose output\n");
+	// printf("    -r seq/cuda         Remesher type: 'seq' for sequential, 'cuda' for CUDA parallel. Default is 'seq'.\n");
+	printf("    -b num_threads         Assign num_threads per block\n");
+	printf("    -o filename            Output mesh description to 'filename'\n");
+	printf("    -t                     Test mode \n");
 }
 
 int main(int argc, char* argv[]) {
@@ -163,18 +163,18 @@ int main(int argc, char* argv[]) {
 	float smoothing_step = 0.5f;
 
 	// other params
-	std::string remesher_type = "seq";
+	std::string remesher_type = "cuda";
 	std::string input_file;
-	std::string output_file;
+	std::string output_file = "";
 	uint32_t block_size = 256;
 	bool verbose = false;
 	bool test = false;
 
-	while ((opt = getopt(argc, argv, ":r:b:o:tvh")) != -1) {
+	while ((opt = getopt(argc, argv, ":b:o:th")) != -1) {
 		switch(opt) {
-			case 'r':
-				remesher_type = std::string(optarg);
-				break;
+			// case 'r':
+			// 	remesher_type = std::string(optarg);
+			// 	break;
 			case 'h':
 				help();
 				return 1;
@@ -183,9 +183,6 @@ int main(int argc, char* argv[]) {
 				break;
 			case 'o':
 				output_file = std::string(optarg);
-				break;
-			case 'v':
-				verbose = true;
 				break;
 			case 't':
 				test = true;
@@ -206,6 +203,7 @@ int main(int argc, char* argv[]) {
 		std::optional<std::pair<uint32_t, std::string>> res; 
 		if ((res = mesh->validate()) != std::nullopt) {
 			std::cout << "could not validate mesh before remesh: "  << res.value().second  << std::endl;
+			delete mesh;
 			return 1;
 		}
 		Isotropic_Remesh_Params params{ num_iters, split_factor, collapse_factor, smoothing_iters, smoothing_step, block_size };
@@ -220,13 +218,20 @@ int main(int argc, char* argv[]) {
 		} else {
 			std::cout << "'" << remesher_type << "' is an invalid remesher type. Options are 'seq' and 'cuda'." << std::endl;
 			help();
+			delete mesh;
 			return 1;
 		}
 		
 		if ((res = mesh->validate()) != std::nullopt) {
 			std::cout << "could not validate mesh before remesh: "  << res.value().second  << std::endl;
+			delete mesh;
 			return 1;
 		}
+		if (output_file.length() > 0) {
+			std::ofstream file(output_file);
+			mesh->describe(file);
+		}
+		delete mesh;
 		return 0;
 	}
 

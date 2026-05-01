@@ -4,6 +4,7 @@
 #include <optional>
 #include <stdint.h>
 #include "mathlib.h"
+#include <iostream>
 
 #define INVALID_IDX UINT32_MAX
 
@@ -122,7 +123,7 @@ public:
     static Mesh from_indexed_faces(std::vector< Vec3 > const &vertices_,  
         std::vector< std::vector< uint32_t > > const &faces_);
     std::optional<std::pair<uint32_t, std::string>> validate() const;
-    void describe() const;
+    void describe(std::ostream& stream = std::cout) const;
     Mesh() = default;
     ~Mesh() = default;
     private:
